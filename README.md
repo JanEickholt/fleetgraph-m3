@@ -82,8 +82,8 @@ With a display: `sim.launch.py headless:=false`, plus the course's `compose.wslg
 Evidence of every scenario run lands in `tests/artifacts/<name>.json` (gitignored).
 Each row below passed on the final code except where noted: a last combined
 `./t -k "not demo"` re-run was stopped by host memory pressure after selftest and
-contract scenario passed (go_to had passed separately after the lidar fix). Sim runs need
-~3–4 GB RAM; stop other containers first on a loaded host.
+contract scenario passed (go_to had passed separately after the lidar fix). Gazebo + Nav2
+runs are memory-heavy (not yet measured); stop other containers first on a loaded host.
 
 | Suite | Result | Evidence |
 |---|---|---|
