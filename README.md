@@ -77,6 +77,45 @@ With a display: `sim.launch.py headless:=false`, plus the course's `compose.wslg
 - Nav2: Jazzy defaults with Regulated Pure Pursuit instead of MPPI (CPU), footprint/inflation
   for the 0.9 m door gaps. Every change is marked `FleetGraph:` in `config/nav2_params.yaml`.
 
-## Verification
+## Verification (2026-10-29, headless, software rendering)
 
-See the latest run in the commit message / below (updated per milestone).
+Evidence of every scenario run lands in `tests/artifacts/<name>.json` (gitignored).
+Each row below passed on the final code except where noted: a last combined
+`./t -k "not demo"` re-run was stopped by host memory pressure after selftest and
+contract scenario passed (go_to had passed separately after the lidar fix). Sim runs need
+~3–4 GB RAM; stop other containers first on a loaded host.
+
+| Suite | Result | Evidence |
+|---|---|---|
+| `./t -k unit` | 48 tests pass | task machine (accept/reject, legs, progress, retry, cancel, idempotency), assertions PASS+FAIL paths, msg ↔ Python mirrors |
+| `selftest_expected_failure` | fails as required | harness detects failures |
+| `weekly_contract_rejections` (no sim) | pass | codes 201/202/101/101 before any Nav2 goal, lifecycle RECEIVED→PARSED→QUEUED→ASSIGNED→REJECTED, `meta.seq` gap-free, 2 Hz heartbeat |
+| `weekly_nav_go_to` (Gazebo+Nav2) | pass, 6.4 min wall | go_to lab_1 around the unmapped crate; ground truth within 0.35 m of goal |
+| `demo_week4` (Gazebo+Nav2) | pass, 16.7 min wall | see below |
+
+`demo_week4` task timeline (sim seconds; mock M1 summary: 6 tasks, avg wait 47.9 s,
+avg completion 57.2 s):
+
+| Task | Type | Outcome |
+|---|---|---|
+| task-0001 | go_to lab_1 | EXECUTING 19.3 → COMPLETED 38.5 |
+| task-0002 | delivery storage→lab_2 (high priority, jumps the queue) | 38.5 → COMPLETED 81.9 |
+| task-0003 | go_to "cafeteria" | REJECTED 201 UNKNOWN_LOCATION at 81.9 |
+| task-0004 | go_to needing `arm` | REJECTED 202 MISSING_CAPABILITY at 82.0 |
+| task-0005 | patrol hall, dock | 82.1 → COMPLETED 114.0 |
+| task-0006 | go_to lab_1, cancelled 6 s in | 114.1 → CANCELLED 400 at 120.2 |
+
+RobotState: 954 messages in 480 sim s = 2.0 Hz.
+
+Harness lessons (both now encoded in `tests/recorder.py`): a best-effort depth-5 recorder
+lost bursts of contract events, and a volatile subscriber missed events published before
+discovery completed — record contract topics reliable, and transient_local where the
+contract publishes transient_local. The same applies to M1/M2 subscribers.
+
+## Next (weeks 5–7, course calendar)
+
+- Local scene graph + `SceneObservation` publisher (obstacles/people from lidar + annotated
+  sim detections), duplicate handling, confidence values.
+- People / social-group models in the world, social costmap layer, wait/replan behaviour.
+- Three robots (namespaced Nav2 + gz bridges), still one fleet topic per contract message.
+- Agree / freeze the contracts with M1 and M2; add rosbridge to the image for the dashboard.
