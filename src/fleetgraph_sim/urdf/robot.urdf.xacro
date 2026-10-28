@@ -145,11 +145,15 @@
     <mu2>0.0</mu2>
   </gazebo>
 
-  <!-- Lidar on top, 0.1 m forward. -->
+  <!-- Lidar 0.1 m forward on a 6 cm mast. FleetGraph: the tutorial mounted
+       it flush on the body top (0.13 m above ground), where the scan plane
+       cuts the wheels (tops at 0.16 m): measured self-returns at 0.12 m,
+       +-108..117 deg (2026-10-29), which Nav2's collision monitor read as an
+       imminent collision and stopped the robot. Scan plane now 0.19 m. -->
   <joint name="lidar_joint" type="fixed">
     <parent link="base_link"/>
     <child link="lidar_link"/>
-    <origin xyz="0.1 0 ${body_h/2}" rpy="0 0 0"/>
+    <origin xyz="0.1 0 ${body_h/2 + 0.06}" rpy="0 0 0"/>
   </joint>
   <link name="lidar_link"/>
 

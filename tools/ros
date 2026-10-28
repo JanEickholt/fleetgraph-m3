@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Host wrapper: run a command in the fleetgraph-m3 container with ROS sourced.
+#   tools/ros ros2 topic list
+#   tools/ros -d /tmp/sim.log ros2 launch fleetgraph_sim sim.launch.py   # detached, logged
+cd "$(dirname "$0")/.."
+if [ "${1:-}" = "-d" ]; then
+  log=$2; shift 2
+  exec docker compose exec -d -e IN_ROS_LOG="$log" fleetgraph /home/ubuntu/tools/in_ros.sh "$@"
+fi
+exec docker compose exec -T fleetgraph /home/ubuntu/tools/in_ros.sh "$@"

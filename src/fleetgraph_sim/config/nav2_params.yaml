@@ -7,9 +7,9 @@
 #    obstacle avoidance comes from 1 Hz global replanning on the costmaps
 #  - footprint radius 0.25 (0.4 x 0.3 m body+wheels), inflation 0.45 so the
 #    0.9 m clear door gaps stay passable
-#  - local costmap: 2D obstacle layer (lidar at 0.13 m), 4 m window
-#  - collision_monitor scan min_height 0.05 (default 0.15 is ABOVE our
-#    0.13 m lidar: it would silently ignore every point)
+#  - local costmap: 2D obstacle layer (planar lidar, scan plane 0.19 m), 4 m window
+#  - collision_monitor scan min_height 0.05 (the default 0.15 sits just
+#    below our 0.19 m scan plane — kept low so a lower mount stays covered)
 #  - velocity limits match the gz DiffDrive (1.0 m/s^2, 2.0 rad/s^2)
 amcl:
   ros__parameters:
@@ -345,7 +345,7 @@ collision_monitor:
     scan:
       type: "scan"
       topic: "scan"
-      min_height: 0.05         # FleetGraph: default 0.15 is above our 0.13 m lidar
+      min_height: 0.05         # FleetGraph: scan plane 0.19 m (see header)
       max_height: 2.0
       enabled: True
 

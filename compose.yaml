@@ -23,6 +23,7 @@ services:
       - ./src:/home/ubuntu/ws/src
       - ./tests:/home/ubuntu/tests
       - ./mock_data:/home/ubuntu/mock_data
+      - ./tools:/home/ubuntu/tools
       - build:/home/ubuntu/ws/build
       - install:/home/ubuntu/ws/install
       - log:/home/ubuntu/ws/log
