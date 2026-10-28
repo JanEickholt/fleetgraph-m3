@@ -1,0 +1,13 @@
+name: selftest_expected_failure
+# Harness self-test: this scenario MUST fail. Proves the machinery reports
+# failures (a never-sent task cannot complete; 2 Hz is not 50 Hz).
+expect_failure: true
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+actions:
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: agent}}
+window_sec: 6
+assert:
+  - task_state: {task_id: never-sent, state: COMPLETED}
+  - min_rate: {topic: /fleet/robot_state, hz: 50.0}

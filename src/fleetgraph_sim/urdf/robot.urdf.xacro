@@ -1,0 +1,255 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fleetgraph_robot">
+
+  <!-- Based on the course tutorial robot (my_robot). Changes for FleetGraph:
+       DiffDrive publishes odom->base_footprint TF for Nav2, uses the
+       measured effective wheel separation (sim-only correction), ground
+       truth odometry for tests, camera throttled for software rendering. -->
+  <xacro:arg name="robot_name" default="robot_1"/>
+
+  <!-- Properties: defined once, used everywhere as ${...}. -->
+  <xacro:property name="body_l" value="0.4"/>
+  <xacro:property name="body_w" value="0.2"/>
+  <xacro:property name="body_h" value="0.1"/>
+  <xacro:property name="body_mass" value="5.0"/>
+  <xacro:property name="wheel_r" value="0.08"/>
+  <xacro:property name="wheel_sep" value="0.26"/>
+  <!-- DiffDrive kinematic separation. Measured 2026-10-26 (tutorial
+       experiments/report.md): the 4 cm wheel friction patches pivot about
+       their inner edge in gz, effective track = 0.26 - 0.04 = 0.22 m, and
+       odom under-reported rotation by 0.26/0.22 = 1.18x with 0.26. Using
+       0.22 makes both commanded and odometry rotation match truth.
+       SIM-ONLY correction: never copy to a real robot without measuring. -->
+  <xacro:property name="wheel_sep_kinematic" value="0.22"/>
+  <xacro:property name="wheel_w" value="0.04"/>
+  <xacro:property name="wheel_mass" value="1.0"/>
+  <!-- caster radius: bottom exactly on the ground -->
+  <xacro:property name="caster_r" value="${wheel_r - body_h/2}"/>
+  <xacro:property name="caster_x" value="${body_l/2 - 0.05}"/>
+  <xacro:property name="caster_mass" value="0.5"/>
+
+  <material name="blue">
+    <color rgba="0.2 0.2 0.8 1.0"/>
+  </material>
+  <material name="black">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+
+  <!-- base_footprint: empty frame on the ground under the robot. -->
+  <link name="base_footprint"/>
+
+  <!-- base_link lifted by one wheel radius so the wheels touch the ground. -->
+  <joint name="footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${wheel_r}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="${body_l} ${body_w} ${body_h}"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${body_l} ${body_w} ${body_h}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${body_mass}"/>
+      <!-- solid box: Ixx = m(w^2+h^2)/12, Iyy = m(l^2+h^2)/12, Izz = m(l^2+w^2)/12 -->
+      <inertia
+        ixx="${body_mass*(body_w*body_w + body_h*body_h)/12}"
+        ixy="0.0" ixz="0.0"
+        iyy="${body_mass*(body_l*body_l + body_h*body_h)/12}"
+        iyz="0.0"
+        izz="${body_mass*(body_l*body_l + body_w*body_w)/12}"/>
+    </inertial>
+  </link>
+
+  <!-- Wheel macro. A URDF cylinder's axis is z, so visual/collision/inertial
+       origins are rotated by pi/2 about x to put the axle along y. -->
+  <xacro:macro name="wheel" params="name y">
+    <link name="${name}_wheel">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_r}" length="${wheel_w}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_r}" length="${wheel_w}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <mass value="${wheel_mass}"/>
+        <!-- solid cylinder: Ixx = Iyy = m(3r^2+l^2)/12, Izz = mr^2/2 -->
+        <inertia
+          ixx="${wheel_mass*(3*wheel_r*wheel_r + wheel_w*wheel_w)/12}"
+          ixy="0.0" ixz="0.0"
+          iyy="${wheel_mass*(3*wheel_r*wheel_r + wheel_w*wheel_w)/12}"
+          iyz="0.0"
+          izz="${wheel_mass*wheel_r*wheel_r/2}"/>
+      </inertial>
+    </link>
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${name}_wheel"/>
+      <origin xyz="0 ${y} 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:wheel name="left" y="${wheel_sep/2}"/>
+  <xacro:wheel name="right" y="${-wheel_sep/2}"/>
+
+  <!-- Caster: small sphere near the front, third support point. Its radius
+       (wheel_r - body_h/2) and joint offset put its bottom exactly on the
+       ground. Friction mu1/mu2 = 0 so it slides freely (see gazebo tag). -->
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="caster"/>
+    <origin xyz="${caster_x} 0 ${-(wheel_r - caster_r)}" rpy="0 0 0"/>
+  </joint>
+  <link name="caster">
+    <visual>
+      <geometry>
+        <sphere radius="${caster_r}"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <geometry>
+        <sphere radius="${caster_r}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${caster_mass}"/>
+      <!-- solid sphere: I = 2/5 m r^2 -->
+      <inertia
+        ixx="${2*caster_mass*caster_r*caster_r/5}"
+        ixy="0.0" ixz="0.0"
+        iyy="${2*caster_mass*caster_r*caster_r/5}"
+        iyz="0.0"
+        izz="${2*caster_mass*caster_r*caster_r/5}"/>
+    </inertial>
+  </link>
+  <gazebo reference="caster">
+    <mu1>0.0</mu1>
+    <mu2>0.0</mu2>
+  </gazebo>
+
+  <!-- Lidar on top, 0.1 m forward. -->
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <origin xyz="0.1 0 ${body_h/2}" rpy="0 0 0"/>
+  </joint>
+  <link name="lidar_link"/>
+
+  <!-- Camera at the front edge of the top. -->
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${body_l/2} 0 ${body_h/2}" rpy="0 0 0"/>
+  </joint>
+  <link name="camera_link"/>
+
+  <!-- ================= Gazebo extensions ================= -->
+
+  <!-- DiffDrive plugin: the "motor controller". Subscribes cmd_vel (Twist),
+       converts to wheel speeds (wheel_separation / wheel_radius must match
+       the links), limits acceleration for smooth motion, integrates wheel
+       motion into odometry published on odom at 30 Hz (frame odom, child
+       frame base_footprint). -->
+  <gazebo>
+    <plugin filename="gz-sim-diff-drive-system"
+            name="gz::sim::systems::DiffDrive">
+      <left_joint>left_wheel_joint</left_joint>
+      <right_joint>right_wheel_joint</right_joint>
+      <wheel_separation>${wheel_sep_kinematic}</wheel_separation>
+      <wheel_radius>${wheel_r}</wheel_radius>
+      <max_linear_acceleration>1.0</max_linear_acceleration>
+      <max_angular_acceleration>2.0</max_angular_acceleration>
+      <topic>/cmd_vel</topic>
+      <odom_topic>/odom</odom_topic>
+      <tf_topic>/tf</tf_topic>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+    </plugin>
+    <!-- Ground truth (world pose as odometry) for TEST VERIFICATION ONLY.
+         Robot software must never subscribe to it (sim-to-real rule). -->
+    <plugin filename="gz-sim-odometry-publisher-system"
+            name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>$(arg robot_name)</robot_base_frame>
+      <odom_topic>/ground_truth/odom</odom_topic>
+      <odom_publish_frequency>10</odom_publish_frequency>
+      <dimensions>2</dimensions>
+    </plugin>
+    <!-- JointStatePublisher: publishes wheel joint angles (for TF/RViz). -->
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+      <joint_name>left_wheel_joint</joint_name>
+      <joint_name>right_wheel_joint</joint_name>
+    </plugin>
+  </gazebo>
+
+  <!-- Lidar: gpu_lidar on lidar_link, 360 beams over a full circle, 10 Hz,
+       range 0.12-8 m, topic scan. gz_frame_id = frame_id in each message. -->
+  <gazebo reference="lidar_link">
+    <sensor name="gpu_lidar" type="gpu_lidar">
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <topic>scan</topic>
+      <gz_frame_id>lidar_link</gz_frame_id>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.1415926</min_angle>
+            <max_angle>3.1415926</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.12</min>
+          <max>8.0</max>
+          <resolution>0.01</resolution>
+        </range>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+  <!-- Camera on camera_link: 640x480 RGB at 30 Hz, 80 deg horizontal FOV,
+       topics camera/image and camera/camera_info. -->
+  <gazebo reference="camera_link">
+    <sensor name="camera" type="camera">
+      <always_on>true</always_on>
+      <!-- 5 Hz (tutorial: 30): software rendering is the sim bottleneck. -->
+      <update_rate>5</update_rate>
+      <topic>camera/image</topic>
+      <gz_frame_id>camera_link</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.3963</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>100.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
+</robot>

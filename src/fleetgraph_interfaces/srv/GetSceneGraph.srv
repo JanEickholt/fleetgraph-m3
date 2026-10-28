@@ -1,0 +1,3 @@
+# Full snapshot of the global scene graph (resync after a version gap or reconnect).
+---
+SceneGraphUpdate snapshot       # is_snapshot = true

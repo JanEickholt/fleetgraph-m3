@@ -1,0 +1,27 @@
+name: weekly_nav_go_to
+# Full M3 chain: Gazebo lab floor + Nav2 (AMCL on the generated map) +
+# agent + mock M1. One go_to lab_1 whose straight line from the dock is
+# blocked by the crate (unknown to the static map): Nav2 must perceive it
+# with the lidar and route around. Arrival is checked against Gazebo GROUND
+# TRUTH (robot software never reads it). Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py
+  ready_timeout_sec: 240
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /ground_truth/odom: nav_msgs/msg/Odometry
+  /odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, args: "--ros-args -p use_sim_time:=true"}}
+  - {t: 15, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/go_to_lab1.yaml"}}
+window_sec: 180
+assert:
+  - task_sequence: {task_id: task-lab1, states: [RECEIVED, ASSIGNED, EXECUTING, COMPLETED]}
+  - task_state: {task_id: task-lab1, state: COMPLETED, source: robot_1}
+  # lab_1 = (6.0, 1.2); Nav2 goal checker xy tolerance 0.25 + AMCL error
+  - arrives_at: {topic: /ground_truth/odom, x: 6.0, y: 1.2, tol: 0.35}
+  - arrives_at: {topic: /fleet/robot_state, x: 6.0, y: 1.2, tol: 0.3}
+  - min_rate: {topic: /fleet/robot_state, hz: 2.0}

@@ -1,0 +1,6 @@
+# Free-target / dynamic-blockage baseline: one go_to whose straight line
+# from the dock is blocked by the crate (not in the static map).
+robot_id: robot_1
+tasks:
+  - {t: 2, task_id: task-lab1, type: go_to, raw_text: "Go to laboratory 1",
+     locations: [lab_1]}

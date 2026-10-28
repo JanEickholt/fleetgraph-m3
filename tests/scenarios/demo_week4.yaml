@@ -1,0 +1,28 @@
+name: demo_week4
+# Week-4 gate: complete internal workflow driven by mock data in Gazebo.
+# mock M1 replays mock_data/scenarios/week4_demo.yaml: go_to (around the
+# crate), delivery with dwell, patrol, two robot-side rejections and an
+# operator cancel. Long (full script); select with ./t -k demo.
+sim:
+  launch: fleetgraph_sim sim.launch.py
+  ready_timeout_sec: 240
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /ground_truth/odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, args: "--ros-args -p use_sim_time:=true"}}
+  - {t: 15, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p log_file:=/tmp/week4_events.jsonl -p scenario_file:={mock_data}/scenarios/week4_demo.yaml"}}
+window_sec: 480
+assert:
+  - task_state: {task_id: task-0001, state: COMPLETED, source: robot_1}
+  - task_state: {task_id: task-0002, state: COMPLETED, source: robot_1}
+  - task_state: {task_id: task-0003, state: REJECTED, error_code: 201, source: robot_1}
+  - task_state: {task_id: task-0004, state: REJECTED, error_code: 202, source: robot_1}
+  - task_state: {task_id: task-0005, state: COMPLETED, source: robot_1}
+  - task_state: {task_id: task-0006, state: CANCELLED, error_code: 400, source: robot_1}
+  # high-priority delivery overtakes the earlier normal/low tasks in the queue
+  - task_sequence: {task_id: task-0002, states: [QUEUED, ASSIGNED, EXECUTING, COMPLETED]}
+  - min_rate: {topic: /fleet/robot_state, hz: 2.0}

@@ -1,0 +1,11 @@
+# Contract-level checks that need no navigation: every task here must be
+# REJECTED by the robot before any Nav2 goal is sent.
+robot_id: robot_1
+tasks:
+  - {t: 1, task_id: rej-location, type: go_to, raw_text: "Go to the cafeteria",
+     locations: [cafeteria]}                           # 201 UNKNOWN_LOCATION
+  - {t: 1, task_id: rej-capability, type: go_to, raw_text: "Bring the arm to lab 1",
+     locations: [lab_1], required_capabilities: [arm]} # 202 MISSING_CAPABILITY
+  - {t: 1, task_id: rej-shape, type: delivery, raw_text: "Deliver to lab 2",
+     locations: [lab_2]}                               # 101 INVALID_TASK (needs 2)
+  - {t: 1, task_id: rej-type, raw_text: "Dance", locations: [lab_1]}  # 101 (type unknown)

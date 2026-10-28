@@ -1,0 +1,546 @@
+{
+ "schema_version": "0.1.0",
+ "messages": {
+  "ErrorInfo": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "uint16",
+     "name": "code"
+    },
+    {
+     "type": "uint8",
+     "name": "level"
+    },
+    {
+     "type": "string",
+     "name": "description"
+    },
+    {
+     "type": "diagnostic_msgs/KeyValue[]",
+     "name": "references"
+    }
+   ],
+   "enums": {
+    "level": {
+     "0": "WARNING",
+     "1": "FATAL"
+    }
+   }
+  },
+  "Location": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "string",
+     "name": "id"
+    },
+    {
+     "type": "string",
+     "name": "label"
+    },
+    {
+     "type": "geometry_msgs/PoseStamped",
+     "name": "pose"
+    }
+   ],
+   "enums": {}
+  },
+  "Meta": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "string",
+     "name": "schema_version"
+    },
+    {
+     "type": "string",
+     "name": "source_id"
+    },
+    {
+     "type": "uint64",
+     "name": "seq"
+    },
+    {
+     "type": "builtin_interfaces/Time",
+     "name": "stamp"
+    }
+   ],
+   "enums": {}
+  },
+  "RobotConnection": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "robot_id"
+    },
+    {
+     "type": "uint8",
+     "name": "state"
+    }
+   ],
+   "enums": {
+    "state": {
+     "0": "ONLINE",
+     "1": "OFFLINE",
+     "2": "CONNECTION_BROKEN"
+    }
+   }
+  },
+  "RobotState": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "robot_id"
+    },
+    {
+     "type": "geometry_msgs/PoseStamped",
+     "name": "pose"
+    },
+    {
+     "type": "geometry_msgs/Twist",
+     "name": "velocity"
+    },
+    {
+     "type": "float32",
+     "name": "localization_score"
+    },
+    {
+     "type": "float32",
+     "name": "battery"
+    },
+    {
+     "type": "bool",
+     "name": "charging"
+    },
+    {
+     "type": "uint8",
+     "name": "status"
+    },
+    {
+     "type": "string[]",
+     "name": "capabilities"
+    },
+    {
+     "type": "string",
+     "name": "current_task_id"
+    },
+    {
+     "type": "float32",
+     "name": "connection_quality"
+    },
+    {
+     "type": "ErrorInfo[]",
+     "name": "errors"
+    }
+   ],
+   "enums": {
+    "status": {
+     "0": "AVAILABLE",
+     "1": "BUSY",
+     "2": "MAINTENANCE",
+     "3": "DISCONNECTED",
+     "4": "ERROR"
+    }
+   }
+  },
+  "SceneEntity": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "string",
+     "name": "id"
+    },
+    {
+     "type": "uint8",
+     "name": "category"
+    },
+    {
+     "type": "string",
+     "name": "label"
+    },
+    {
+     "type": "geometry_msgs/Point",
+     "name": "position"
+    },
+    {
+     "type": "geometry_msgs/Vector3",
+     "name": "size"
+    },
+    {
+     "type": "geometry_msgs/Vector3",
+     "name": "velocity"
+    },
+    {
+     "type": "float32",
+     "name": "confidence"
+    },
+    {
+     "type": "builtin_interfaces/Time",
+     "name": "first_seen"
+    },
+    {
+     "type": "builtin_interfaces/Time",
+     "name": "last_seen"
+    },
+    {
+     "type": "string[]",
+     "name": "member_ids"
+    },
+    {
+     "type": "string[]",
+     "name": "source_ids"
+    },
+    {
+     "type": "diagnostic_msgs/KeyValue[]",
+     "name": "attributes"
+    }
+   ],
+   "enums": {
+    "category": {
+     "0": "PLACE",
+     "1": "TRAVERSABLE",
+     "2": "OBSTACLE",
+     "3": "PERSON",
+     "4": "GROUP",
+     "5": "OBJECT",
+     "6": "ROBOT"
+    }
+   }
+  },
+  "SceneGraphUpdate": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "source_robot_id"
+    },
+    {
+     "type": "string",
+     "name": "frame_id"
+    },
+    {
+     "type": "uint64",
+     "name": "graph_version"
+    },
+    {
+     "type": "uint64",
+     "name": "base_version"
+    },
+    {
+     "type": "bool",
+     "name": "is_snapshot"
+    },
+    {
+     "type": "SceneEntity[]",
+     "name": "added_nodes"
+    },
+    {
+     "type": "SceneEntity[]",
+     "name": "updated_nodes"
+    },
+    {
+     "type": "string[]",
+     "name": "removed_node_ids"
+    },
+    {
+     "type": "SceneRelation[]",
+     "name": "added_relations"
+    },
+    {
+     "type": "SceneRelation[]",
+     "name": "removed_relations"
+    }
+   ],
+   "enums": {}
+  },
+  "SceneObservation": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "robot_id"
+    },
+    {
+     "type": "string",
+     "name": "frame_id"
+    },
+    {
+     "type": "geometry_msgs/PoseStamped",
+     "name": "sensor_pose"
+    },
+    {
+     "type": "SceneEntity[]",
+     "name": "entities"
+    },
+    {
+     "type": "SceneRelation[]",
+     "name": "relations"
+    },
+    {
+     "type": "string[]",
+     "name": "removed_entity_ids"
+    },
+    {
+     "type": "float32",
+     "name": "confidence"
+    }
+   ],
+   "enums": {}
+  },
+  "SceneRelation": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "string",
+     "name": "subject_id"
+    },
+    {
+     "type": "uint8",
+     "name": "predicate"
+    },
+    {
+     "type": "string",
+     "name": "object_id"
+    },
+    {
+     "type": "float32",
+     "name": "confidence"
+    }
+   ],
+   "enums": {
+    "predicate": {
+     "0": "INSIDE",
+     "1": "NEAR",
+     "2": "BLOCKS",
+     "3": "OCCUPIES"
+    }
+   }
+  },
+  "TaskAssignment": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "robot_id"
+    },
+    {
+     "type": "uint32",
+     "name": "assignment_rev"
+    },
+    {
+     "type": "TaskRequest",
+     "name": "task"
+    }
+   ],
+   "enums": {}
+  },
+  "TaskCommand": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "robot_id"
+    },
+    {
+     "type": "string",
+     "name": "task_id"
+    },
+    {
+     "type": "uint8",
+     "name": "command"
+    },
+    {
+     "type": "string",
+     "name": "reason"
+    }
+   ],
+   "enums": {
+    "command": {
+     "1": "CANCEL"
+    }
+   }
+  },
+  "TaskRequest": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "task_id"
+    },
+    {
+     "type": "string",
+     "name": "raw_text"
+    },
+    {
+     "type": "uint8",
+     "name": "type"
+    },
+    {
+     "type": "Location[]",
+     "name": "locations"
+    },
+    {
+     "type": "uint8",
+     "name": "priority"
+    },
+    {
+     "type": "string[]",
+     "name": "required_capabilities"
+    },
+    {
+     "type": "builtin_interfaces/Time",
+     "name": "deadline"
+    },
+    {
+     "type": "uint32",
+     "name": "patrol_loops"
+    },
+    {
+     "type": "diagnostic_msgs/KeyValue[]",
+     "name": "extra_constraints"
+    },
+    {
+     "type": "builtin_interfaces/Time",
+     "name": "created_at"
+    }
+   ],
+   "enums": {
+    "type": {
+     "0": "UNKNOWN",
+     "1": "GO_TO",
+     "2": "DELIVERY",
+     "3": "PATROL"
+    },
+    "priority": {
+     "0": "LOW",
+     "1": "NORMAL",
+     "2": "HIGH",
+     "3": "URGENT"
+    }
+   }
+  },
+  "TaskUpdate": {
+   "kind": "msg",
+   "fields": [
+    {
+     "type": "Meta",
+     "name": "meta"
+    },
+    {
+     "type": "string",
+     "name": "task_id"
+    },
+    {
+     "type": "string",
+     "name": "robot_id"
+    },
+    {
+     "type": "uint32",
+     "name": "assignment_rev"
+    },
+    {
+     "type": "uint8",
+     "name": "state"
+    },
+    {
+     "type": "float32",
+     "name": "progress"
+    },
+    {
+     "type": "uint32",
+     "name": "leg_index"
+    },
+    {
+     "type": "uint32",
+     "name": "leg_count"
+    },
+    {
+     "type": "float32",
+     "name": "distance_remaining_m"
+    },
+    {
+     "type": "uint16",
+     "name": "error_code"
+    },
+    {
+     "type": "string",
+     "name": "reason"
+    },
+    {
+     "type": "bool",
+     "name": "reassignment_requested"
+    }
+   ],
+   "enums": {
+    "state": {
+     "0": "RECEIVED",
+     "1": "PARSED",
+     "2": "QUEUED",
+     "3": "ASSIGNED",
+     "4": "EXECUTING",
+     "5": "COMPLETED",
+     "6": "FAILED",
+     "7": "CANCELLED",
+     "8": "REASSIGNED",
+     "9": "REJECTED"
+    },
+    "error": {
+     "0": "NONE",
+     "100": "PARSE",
+     "101": "INVALID_TASK",
+     "200": "ROBOT_BUSY",
+     "201": "UNKNOWN_LOCATION",
+     "202": "MISSING_CAPABILITY",
+     "203": "LOW_BATTERY",
+     "204": "ROBOT_UNAVAILABLE",
+     "300": "NAVIGATION_FAILED",
+     "301": "BLOCKED",
+     "302": "TIMEOUT",
+     "400": "CANCELLED_BY_OPERATOR",
+     "401": "ROBOT_LOST"
+    }
+   }
+  },
+  "GetSceneGraph": {
+   "kind": "srv",
+   "fields": [
+    {
+     "type": "SceneGraphUpdate",
+     "name": "snapshot"
+    }
+   ],
+   "enums": {}
+  }
+ }
+}

@@ -1,0 +1,24 @@
+name: weekly_contract_rejections
+# Contract-level, no sim (wall time): the agent must refuse each malformed
+# task with the right error code BEFORE sending any Nav2 goal, publish its
+# RobotState heartbeat at the nominal 2 Hz, and announce ONLINE.
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /fleet/robot_connection: fleetgraph_interfaces/msg/RobotConnection
+actions:
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: agent}}
+  - {t: 3, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                 args: "--ros-args -p scenario_file:={mock_data}/scenarios/rejections.yaml"}}
+window_sec: 15
+assert:
+  - task_state: {task_id: rej-location, state: REJECTED, error_code: 201, source: robot_1}
+  - task_state: {task_id: rej-capability, state: REJECTED, error_code: 202, source: robot_1}
+  - task_state: {task_id: rej-shape, state: REJECTED, error_code: 101, source: robot_1}
+  - task_state: {task_id: rej-type, state: REJECTED, error_code: 101, source: robot_1}
+  - task_sequence: {task_id: rej-location, states: [RECEIVED, PARSED, QUEUED, ASSIGNED, REJECTED]}
+  - seq_contiguous: {topic: /fleet/task_update}     # no lost / duplicated events
+  - seq_contiguous: {topic: /fleet/robot_state}
+  - min_rate: {topic: /fleet/robot_state, hz: 2.0}
+  - final_value: {topic: /fleet/robot_state, field: status, equals: 0}    # AVAILABLE
+  - publishes: {topic: /fleet/robot_connection}

@@ -4,6 +4,8 @@
 #   docker compose up -d --build
 #   docker compose exec fleetgraph bash          # ROS + workspace sourced
 #   ./t                                          # test suite (host wrapper)
+# Fixed project name: same volumes from any checkout / worktree directory.
+name: fleetgraph-m3
 services:
   fleetgraph:
     build: .
