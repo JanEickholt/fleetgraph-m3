@@ -1,0 +1,31 @@
+# FleetGraph M3 dev container (headless). Sources are bind-mounted so host
+# edits are live; build/install/log stay in named volumes.
+#
+#   docker compose up -d --build
+#   docker compose exec fleetgraph bash          # ROS + workspace sourced
+#   ./t                                          # test suite (host wrapper)
+services:
+  fleetgraph:
+    build: .
+    image: fleetgraph-m3
+    container_name: fleetgraph-m3
+    hostname: fleetgraph-m3
+    stdin_open: true
+    tty: true
+    init: true
+    shm_size: 1gb
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-30}
+      - LIBGL_ALWAYS_SOFTWARE=1
+    volumes:
+      - ./src:/home/ubuntu/ws/src
+      - ./tests:/home/ubuntu/tests
+      - ./mock_data:/home/ubuntu/mock_data
+      - build:/home/ubuntu/ws/build
+      - install:/home/ubuntu/ws/install
+      - log:/home/ubuntu/ws/log
+
+volumes:
+  build:
+  install:
+  log:

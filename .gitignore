@@ -1,0 +1,8 @@
+.claude/worktrees/
+__pycache__/
+*.pyc
+/build/
+/install/
+/log/
+.pytest_cache/
+artifacts/
