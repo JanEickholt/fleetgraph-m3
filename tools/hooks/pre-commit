@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# FleetGraph pre-commit: fast regression tier on every commit that touches code.
+#   enable once per clone:   git config core.hooksPath tools/hooks
+#   bypass (emergency only): git commit --no-verify
+#
+# 1. generated files (world/map/locations, docs/contracts.json) match their source
+# 2. the fleetgraph-m3 container runs AND bind-mounts THIS checkout (otherwise
+#    the tests would exercise another checkout's code: a false green)
+# 3. rebuild if build inputs changed, then ./t --fast (~25 s, no sim)
+# Docs-only commits skip everything. Slow tiers (./t -k weekly / demo) stay
+# manual: run them after Nav2/sim changes and before each course gate.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMRD)
+code=$(printf '%s\n' "$staged" |
+       grep -E '^(src/|tests/|mock_data/|tools/|t$|compose\.yaml$|Dockerfile$)' || true)
+if [ -z "$code" ]; then
+  echo "pre-commit: no code staged, tests skipped"
+  exit 0
+fi
+
+python3 -I tools/gen_world.py --check
+python3 -I tools/export_contracts.py --check
+
+running=$(docker inspect -f '{{.State.Running}}' fleetgraph-m3 2>/dev/null || echo false)
+if [ "$running" != "true" ]; then
+  echo "pre-commit: container fleetgraph-m3 is not running." >&2
+  echo "  start it from $root:  docker compose up -d   (bypass: git commit --no-verify)" >&2
+  exit 1
+fi
+mounted=$(docker inspect fleetgraph-m3 --format \
+  '{{range .Mounts}}{{if eq .Destination "/home/ubuntu/ws/src"}}{{.Source}}{{end}}{{end}}')
+if [ "$mounted" != "$root/src" ]; then
+  echo "pre-commit: container mounts $mounted," >&2
+  echo "  not this checkout ($root/src) — the tests would run the wrong code." >&2
+  echo "  re-create it from here:  docker compose up -d" >&2
+  exit 1
+fi
+
+if ! git diff --quiet -- src tests mock_data tools; then
+  echo "pre-commit: WARNING unstaged changes under src/tests/mock_data/tools —" \
+       "tests run against the working tree, not exactly what you commit" >&2
+fi
+
+build=""
+# message/manifest changes need colcon; so do new files (symlink-install only
+# links files that existed at the last build)
+if printf '%s\n' "$code" | grep -qE '^src/.*(\.msg|\.srv|CMakeLists\.txt|package\.xml|setup\.(py|cfg))$' ||
+   git diff --cached --name-only --diff-filter=A | grep -q '^src/'; then
+  build="--build"
+fi
+
+echo "pre-commit: ./t $build --fast"
+./t $build --fast

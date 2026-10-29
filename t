@@ -1,19 +1,40 @@
 #!/usr/bin/env bash
 # FleetGraph M3 test harness entry. Runs pytest inside the fleetgraph-m3
 # container (tests/ and src/ are bind-mounted, see compose.yaml).
-#   ./t                  full suite (unit + selftest + weekly scenarios)
+#   ./t                  everything, incl. the ~17 min demo
+#   ./t --fast           commit tier: unit + selftest + no-sim contract scenario (~25 s),
+#                        no process sweep (safe next to a manually running sim)
 #   ./t -k unit          no-sim unit tests only (seconds)
-#   ./t -k weekly        weekly regression scenarios
+#   ./t -k weekly        weekly regression scenarios (Gazebo + Nav2, ~6 min)
 #   ./t -k demo          week-4 demo scenario (long: full task script)
-#   ./t --build ...      colcon build first
+#   ./t --build ...      colcon build first (fails if the build fails)
 set -euo pipefail
 cd "$(dirname "$0")"
 
+FAST_TIER='unit or selftest or contract_rejections'
+
 exec_ros() { docker compose exec -T fleetgraph bash -c "$1"; }
+
+run_pytest() {
+  docker compose exec -T fleetgraph bash -c '
+    source /opt/ros/jazzy/setup.bash
+    source /home/ubuntu/ws/install/setup.bash 2>/dev/null || true
+    cd /home/ubuntu
+    PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests "$@"' _ "$@"
+}
 
 if [ "${1:-}" = "--build" ]; then
   shift
-  exec_ros 'source /opt/ros/jazzy/setup.bash && cd ~/ws && colcon build --symlink-install 2>&1 | tail -5'
+  exec_ros 'set -o pipefail; source /opt/ros/jazzy/setup.bash && cd ~/ws &&
+            colcon build --symlink-install 2>&1 | tail -5'
+fi
+
+if [ "${1:-}" = "--fast" ]; then
+  shift
+  # No sweep: these tests start no Gazebo, and the runner gives every
+  # scenario its own random ROS_DOMAIN_ID and kills its process groups.
+  run_pytest -q -k "$FAST_TIER" "$@"
+  exit $?
 fi
 
 # Idempotency + teardown: kill leftover sim / Nav2 / robot processes. TERM
@@ -41,11 +62,7 @@ cleanup_ros() {
 cleanup_ros || { echo "ABORT: leftover ROS processes will not die" >&2; exit 9; }
 
 set +e
-docker compose exec -T fleetgraph bash -c '
-  source /opt/ros/jazzy/setup.bash
-  source /home/ubuntu/ws/install/setup.bash 2>/dev/null || true
-  cd /home/ubuntu
-  PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider tests "$@"' _ "$@"
+run_pytest "$@"
 rc=$?
 set -e
 

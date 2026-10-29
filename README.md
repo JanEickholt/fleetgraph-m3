@@ -19,10 +19,16 @@ lookup tables for JSON consumers (regenerate with `python3 tools/export_contract
 
 ```bash
 docker compose up -d --build            # image + container "fleetgraph-m3" (course base + Nav2)
+git config core.hooksPath tools/hooks   # once per clone: pre-commit runs the fast tier
 ./t --build -k unit                     # colcon build + unit tests (seconds)
-./t -k weekly                           # regression scenarios incl. Gazebo + Nav2 (minutes)
-./t -k demo                             # week-4 demo: full mock task script (long)
+./t --fast                              # commit tier: unit + selftest + contract scenario (~25 s)
+./t -k weekly                           # regression scenarios incl. Gazebo + Nav2 (~6 min)
+./t -k demo                             # week-4 demo: full mock task script (~17 min)
 ```
+
+Test tiers: `--fast` on every code commit (pre-commit hook; it also checks that generated
+files are current and that the container mounts *this* checkout), `-k weekly` after Nav2 /
+sim changes, `-k demo` before each course gate. Docs-only commits skip the hook.
 
 Run things by hand (`tools/in_ros.sh` sources ROS + workspace in the container):
 

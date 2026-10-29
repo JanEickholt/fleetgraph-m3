@@ -3,11 +3,13 @@
 docs/contracts.json — lookup tables for non-ROS consumers (rosbridge sends
 enum fields as plain integers; constants are not transmitted).
 
-Usage: python3 tools/export_contracts.py   (pure Python, no ROS needed)
+Usage: python3 tools/export_contracts.py           (pure Python, no ROS needed)
+       python3 tools/export_contracts.py --check   verify docs/contracts.json is current
 """
 import json
 import os
 import re
+import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 PKG = os.path.join(ROOT, 'src', 'fleetgraph_interfaces')
@@ -46,11 +48,23 @@ def main():
                 # keyed by constant prefix: STATE_* -> "state" (field state),
                 # ERROR_* -> "error" (field error_code), LEVEL_* -> "level", ...
                 'enums': {k.lower(): v for k, v in enums.items()}}
+    text = json.dumps(out, indent=1) + '\n'
+    if '--check' in sys.argv[1:]:
+        try:
+            with open(OUT) as f:
+                current = f.read()
+        except OSError:
+            current = None
+        if current != text:
+            print('stale generated file: docs/contracts.json '
+                  '(run python3 tools/export_contracts.py)')
+            return 1
+        return 0
     with open(OUT, 'w') as f:
-        json.dump(out, f, indent=1)
-        f.write('\n')
+        f.write(text)
     print(f'{OUT}: {len(out["messages"])} types')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
