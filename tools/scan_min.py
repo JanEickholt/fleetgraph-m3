@@ -13,16 +13,18 @@ from sensor_msgs.msg import LaserScan
 def main():
     rclpy.init()
     node = rclpy.create_node('scan_min')
-    got = []
-    node.create_subscription(LaserScan, '/scan', got.append, qos_profile_sensor_data)
-    while not got:
+    received = []
+    node.create_subscription(LaserScan, '/scan', received.append, qos_profile_sensor_data)
+    while not received:
         rclpy.spin_once(node, timeout_sec=1.0)
-    s = got[0]
-    pts = sorted((r, math.degrees(s.angle_min + i * s.angle_increment))
-                 for i, r in enumerate(s.ranges) if math.isfinite(r))
-    print(f'frame {s.header.frame_id}, range_min {s.range_min}, {len(pts)} finite returns')
-    for r, a in pts[:10]:
-        print(f'  {r:.3f} m at {a:7.1f} deg')
+    scan = received[0]
+    returns = sorted(
+        (distance, math.degrees(scan.angle_min + index * scan.angle_increment))
+        for index, distance in enumerate(scan.ranges) if math.isfinite(distance))
+    print(f'frame {scan.header.frame_id}, range_min {scan.range_min}, '
+          f'{len(returns)} finite returns')
+    for distance, bearing_deg in returns[:10]:
+        print(f'  {distance:.3f} m at {bearing_deg:7.1f} deg')
     rclpy.shutdown()
 
 

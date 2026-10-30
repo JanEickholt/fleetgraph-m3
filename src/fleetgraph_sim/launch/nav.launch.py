@@ -15,13 +15,14 @@ from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
-    pkg = get_package_share_directory('fleetgraph_sim')
+    share_dir = get_package_share_directory('fleetgraph_sim')
     bringup = os.path.join(get_package_share_directory('nav2_bringup'),
                            'launch', 'bringup_launch.py')
     return LaunchDescription([
-        DeclareLaunchArgument('map', default_value=os.path.join(pkg, 'maps', 'lab_floor.yaml')),
+        DeclareLaunchArgument('map',
+                              default_value=os.path.join(share_dir, 'maps', 'lab_floor.yaml')),
         DeclareLaunchArgument('params_file',
-                              default_value=os.path.join(pkg, 'config', 'nav2_params.yaml')),
+                              default_value=os.path.join(share_dir, 'config', 'nav2_params.yaml')),
         DeclareLaunchArgument('log_level', default_value='warn'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(bringup),

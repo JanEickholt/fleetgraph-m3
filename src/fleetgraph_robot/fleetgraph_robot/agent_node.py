@@ -25,9 +25,11 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from fleetgraph_interfaces.msg import (
     ErrorInfo, RobotConnection, RobotState, TaskAssignment, TaskCommand, TaskUpdate)
-from fleetgraph_robot import contract as c
+from fleetgraph_robot import contract
 from fleetgraph_robot.task_machine import (
-    CancelNavigation, E, Navigate, TaskMachine, Update, Wait)
+    CancelNavigation, ErrorCode, Navigate, TaskMachine, Update, Wait)
+
+NAV_SERVER_POLL_SEC = 0.5
 
 
 class Agent(Node):
@@ -35,7 +37,7 @@ class Agent(Node):
         super().__init__('fleetgraph_agent')
         default_locations = get_package_share_directory('fleetgraph_sim') + \
             '/config/locations.yaml'
-        p = self.declare_parameters('', [
+        declared = self.declare_parameters('', [
             ('robot_id', 'robot_1'),
             ('capabilities', ['navigate', 'deliver', 'patrol', 'lidar', 'camera']),
             ('locations_file', default_locations),
@@ -53,53 +55,54 @@ class Agent(Node):
             ('nav_action', 'navigate_to_pose'),
             ('nav_server_timeout_sec', 30.0),
         ])
-        prm = {x.name: x.value for x in p}
-        self.robot_id = prm['robot_id']
-        self.prm = prm
-        self.locations = c.load_locations(prm['locations_file'])
+        self.params = {parameter.name: parameter.value for parameter in declared}
+        self.robot_id = self.params['robot_id']
+        self.locations = contract.load_locations(self.params['locations_file'])
         self.machine = TaskMachine(
-            capabilities=prm['capabilities'], resolve=self.locations.get,
-            min_battery=prm['min_battery'], dwell_sec=prm['dwell_sec'],
-            max_leg_retries=prm['max_leg_retries'])
-        self.meta = c.MetaStamper(self.robot_id, self.get_clock())
+            capabilities=self.params['capabilities'], resolve=self.locations.get,
+            min_battery=self.params['min_battery'], dwell_sec=self.params['dwell_sec'],
+            max_leg_retries=self.params['max_leg_retries'])
+        self.meta = contract.MetaStamper(self.robot_id, self.get_clock())
 
-        self.pub_update = self.create_publisher(TaskUpdate, c.TOPIC_TASK_UPDATE, c.QOS_EVENTS)
-        self.pub_state = self.create_publisher(RobotState, c.TOPIC_ROBOT_STATE, c.QOS_TELEMETRY)
-        self.pub_conn = self.create_publisher(
-            RobotConnection, c.TOPIC_ROBOT_CONNECTION, c.QOS_LATCHED)
-        self.create_subscription(TaskAssignment, c.TOPIC_TASK_ASSIGNMENT,
-                                 self._on_assignment, c.QOS_COMMANDS)
-        self.create_subscription(TaskCommand, c.TOPIC_TASK_COMMAND,
-                                 self._on_command, c.QOS_COMMANDS)
+        self.pub_update = self.create_publisher(
+            TaskUpdate, contract.TOPIC_TASK_UPDATE, contract.QOS_EVENTS)
+        self.pub_state = self.create_publisher(
+            RobotState, contract.TOPIC_ROBOT_STATE, contract.QOS_TELEMETRY)
+        self.pub_connection = self.create_publisher(
+            RobotConnection, contract.TOPIC_ROBOT_CONNECTION, contract.QOS_LATCHED)
+        self.create_subscription(TaskAssignment, contract.TOPIC_TASK_ASSIGNMENT,
+                                 self._on_assignment, contract.QOS_COMMANDS)
+        self.create_subscription(TaskCommand, contract.TOPIC_TASK_COMMAND,
+                                 self._on_command, contract.QOS_COMMANDS)
         self.create_subscription(Odometry, '/odom', self._on_odom, 10)
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose',
-                                 self._on_amcl, 10)
+                                 self._on_amcl_pose, 10)
 
-        self.tf = Buffer()
-        self.tf_listener = TransformListener(self.tf, self)
-        self.nav = ActionClient(self, NavigateToPose, prm['nav_action'])
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.nav_client = ActionClient(self, NavigateToPose, self.params['nav_action'])
         self._goal_handle = None
         self._dwell_timer = None
-        self._last_feedback_t = None
+        self._last_feedback_time = None
 
-        self.battery = float(prm['battery_initial'])
+        self.battery = float(self.params['battery_initial'])
         self._last_odom_xy = None
-        self._last_drain_t = None
+        self._last_drain_time = None
         self._velocity = None
-        self._loc_score = -1.0
+        self._localization_score = -1.0
         self._pose = None
 
-        self.create_timer(1.0 / prm['state_rate_hz'], self._publish_state)
+        self.create_timer(1.0 / self.params['state_rate_hz'], self._publish_state)
         self._publish_connection(RobotConnection.STATE_ONLINE)
         self.get_logger().info(
             f'{self.robot_id} ready: {len(self.locations)} locations, '
-            f'capabilities {prm["capabilities"]}')
+            f'capabilities {self.params["capabilities"]}')
 
     # ------------------------------------------------------------- inputs
     def _on_assignment(self, msg):
         if msg.robot_id != self.robot_id:
             return
-        spec = c.spec_from_assignment(msg)
+        spec = contract.spec_from_assignment(msg)
         available = self._status() not in (RobotState.STATUS_MAINTENANCE,
                                            RobotState.STATUS_ERROR)
         self.get_logger().info(
@@ -115,96 +118,104 @@ class Agent(Node):
 
     def _on_odom(self, msg):
         self._velocity = msg.twist.twist
-        p = msg.pose.pose.position
+        position = msg.pose.pose.position
         if self._last_odom_xy is not None:
-            moved = math.hypot(p.x - self._last_odom_xy[0], p.y - self._last_odom_xy[1])
-            self.battery -= moved * self.prm['battery_drain_per_m']
-        self._last_odom_xy = (p.x, p.y)
+            last_x, last_y = self._last_odom_xy
+            moved = math.hypot(position.x - last_x, position.y - last_y)
+            self.battery -= moved * self.params['battery_drain_per_m']
+        self._last_odom_xy = (position.x, position.y)
 
-    def _on_amcl(self, msg):
-        cov = msg.pose.covariance
-        std_xy = math.sqrt(max(cov[0], 0.0) + max(cov[7], 0.0))
+    def _on_amcl_pose(self, msg):
+        covariance = msg.pose.covariance
+        variance_x, variance_y = covariance[0], covariance[7]
+        std_xy = math.sqrt(max(variance_x, 0.0) + max(variance_y, 0.0))
         # heuristic: 1.0 at 0 m std, 0.5 at 0.25 m std
-        self._loc_score = 1.0 / (1.0 + std_xy / 0.25)
+        self._localization_score = 1.0 / (1.0 + std_xy / 0.25)
 
     # ----------------------------------------------------------- commands
     def _dispatch(self, outputs):
-        for o in outputs:
-            if isinstance(o, Update):
-                self._publish_update(o)
-            elif isinstance(o, Navigate):
-                self._navigate(o)
-            elif isinstance(o, CancelNavigation):
+        for output in outputs:
+            if isinstance(output, Update):
+                self._publish_update(output)
+            elif isinstance(output, Navigate):
+                self._navigate(output)
+            elif isinstance(output, CancelNavigation):
                 self._cancel_navigation()
-            elif isinstance(o, Wait):
-                self._start_dwell(o.seconds)
+            elif isinstance(output, Wait):
+                self._start_dwell(output.seconds)
 
-    def _publish_update(self, u):
-        msg = c.update_to_msg(u, self.robot_id)
-        self.pub_update.publish(self.meta.stamp(msg, c.TOPIC_TASK_UPDATE))
-        if u.state != TaskUpdate.STATE_EXECUTING or u.reason:
+    def _publish_update(self, update):
+        msg = contract.update_to_msg(update, self.robot_id)
+        self.pub_update.publish(self.meta.stamp(msg, contract.TOPIC_TASK_UPDATE))
+        if update.state != TaskUpdate.STATE_EXECUTING or update.reason:
             self.get_logger().info(
-                f'task {u.task_id}: state {u.state} code {u.error_code} {u.reason}')
+                f'task {update.task_id}: state {update.state} '
+                f'code {update.error_code} {update.reason}')
 
-    def _navigate(self, cmd, waited=0.0):
-        gen = cmd.generation
-        if gen != self.machine.nav_generation:
+    def _navigate(self, navigate, waited_sec=0.0):
+        generation = navigate.generation
+        if generation != self.machine.nav_generation:
             return                                  # superseded while waiting
-        if not self.nav.server_is_ready():
-            limit = self.prm['nav_server_timeout_sec']
-            if waited >= limit:
-                self.get_logger().warn(f'Nav2 not available after {limit:.0f}s')
-                self._dispatch(self.machine.nav_result(gen, False, 'nav2 not available'))
+        if not self.nav_client.server_is_ready():
+            timeout_sec = self.params['nav_server_timeout_sec']
+            if waited_sec >= timeout_sec:
+                self.get_logger().warn(f'Nav2 not available after {timeout_sec:.0f}s')
+                self._dispatch(self.machine.nav_result(
+                    generation, False, 'nav2 not available'))
                 return
             # Nav2 activates its lifecycle nodes after start: poll (sim time)
-            timer = None
+            retry_timer = None
 
             def retry():
-                timer.cancel()
-                self._navigate(cmd, waited + 0.5)
-            timer = self.create_timer(0.5, retry)
+                retry_timer.cancel()
+                self._navigate(navigate, waited_sec + NAV_SERVER_POLL_SEC)
+            retry_timer = self.create_timer(NAV_SERVER_POLL_SEC, retry)
             return
-        goal = NavigateToPose.Goal()
-        goal.pose = PoseStamped()
-        goal.pose.header.frame_id = self.prm['map_frame']
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = cmd.goal.x
-        goal.pose.pose.position.y = cmd.goal.y
-        qx, qy, qz, qw = c.quaternion_from_yaw(cmd.goal.yaw)
-        goal.pose.pose.orientation.x, goal.pose.pose.orientation.y = qx, qy
-        goal.pose.pose.orientation.z, goal.pose.pose.orientation.w = qz, qw
+        goal = navigate.goal
+        nav_goal = NavigateToPose.Goal()
+        nav_goal.pose = PoseStamped()
+        nav_goal.pose.header.frame_id = self.params['map_frame']
+        nav_goal.pose.header.stamp = self.get_clock().now().to_msg()
+        nav_goal.pose.pose.position.x = goal.x
+        nav_goal.pose.pose.position.y = goal.y
+        orientation = nav_goal.pose.pose.orientation
+        orientation.x, orientation.y, orientation.z, orientation.w = \
+            contract.quaternion_from_yaw(goal.yaw)
         self.get_logger().info(
-            f'leg {cmd.leg_index} -> {cmd.goal.location_id} '
-            f'({cmd.goal.x:.2f}, {cmd.goal.y:.2f})')
-        future = self.nav.send_goal_async(
-            goal, feedback_callback=lambda fb, g=gen: self._on_feedback(g, fb))
-        future.add_done_callback(lambda f, g=gen: self._on_goal_response(g, f))
+            f'leg {navigate.leg_index} -> {goal.location_id} '
+            f'({goal.x:.2f}, {goal.y:.2f})')
+        send_future = self.nav_client.send_goal_async(
+            nav_goal,
+            feedback_callback=lambda feedback: self._on_feedback(generation, feedback))
+        send_future.add_done_callback(
+            lambda future: self._on_goal_response(generation, future))
 
-    def _on_goal_response(self, gen, future):
-        handle = future.result()
-        if not handle.accepted:
-            self._dispatch(self.machine.nav_result(gen, False, 'goal rejected by Nav2'))
+    def _on_goal_response(self, generation, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self._dispatch(self.machine.nav_result(
+                generation, False, 'goal rejected by Nav2'))
             return
-        self._goal_handle = handle
-        handle.get_result_async().add_done_callback(
-            lambda f, g=gen: self._on_result(g, f))
+        self._goal_handle = goal_handle
+        goal_handle.get_result_async().add_done_callback(
+            lambda result_future: self._on_result(generation, result_future))
 
-    def _on_feedback(self, gen, fb):
-        if gen != self.machine.nav_generation:
+    def _on_feedback(self, generation, feedback):
+        if generation != self.machine.nav_generation:
             return
         now = self.get_clock().now()
-        period = Duration(seconds=self.prm['feedback_period_sec'])
-        if self._last_feedback_t is not None and now - self._last_feedback_t < period:
+        period = Duration(seconds=self.params['feedback_period_sec'])
+        if self._last_feedback_time is not None and now - self._last_feedback_time < period:
             return
-        self._last_feedback_t = now
-        self._dispatch(self.machine.nav_feedback(fb.feedback.distance_remaining))
+        self._last_feedback_time = now
+        self._dispatch(self.machine.nav_feedback(feedback.feedback.distance_remaining))
 
-    def _on_result(self, gen, future):
-        res = future.result()
-        ok = res.status == GoalStatus.STATUS_SUCCEEDED
-        reason = '' if ok else (getattr(res.result, 'error_msg', '') or
-                                f'nav2 status {res.status}')
-        self._dispatch(self.machine.nav_result(gen, ok, reason))
+    def _on_result(self, generation, future):
+        response = future.result()
+        succeeded = response.status == GoalStatus.STATUS_SUCCEEDED
+        reason = '' if succeeded else (getattr(response.result, 'error_msg', '') or
+                                       f'nav2 status {response.status}')
+        self._dispatch(self.machine.nav_result(generation, succeeded, reason))
 
     def _cancel_navigation(self):
         if self._goal_handle is not None:
@@ -215,11 +226,11 @@ class Agent(Node):
             self._dwell_timer = None
 
     def _start_dwell(self, seconds):
-        def done():
+        def dwell_finished():
             self._dwell_timer.cancel()
             self._dwell_timer = None
             self._dispatch(self.machine.dwell_done())
-        self._dwell_timer = self.create_timer(seconds, done)
+        self._dwell_timer = self.create_timer(seconds, dwell_finished)
 
     # ---------------------------------------------------------- telemetry
     def _status(self):
@@ -231,50 +242,58 @@ class Agent(Node):
         return RobotState.STATUS_AVAILABLE
 
     def _errors(self):
-        errs = []
-        if self.battery < self.prm['min_battery']:
-            errs.append(ErrorInfo(code=E.LOW_BATTERY, level=ErrorInfo.LEVEL_WARNING,
-                                  description=f'battery {self.battery:.2f}'))
+        errors = []
+        if self.battery < self.params['min_battery']:
+            errors.append(ErrorInfo(code=ErrorCode.LOW_BATTERY,
+                                    level=ErrorInfo.LEVEL_WARNING,
+                                    description=f'battery {self.battery:.2f}'))
         if self._pose is None:
-            errs.append(ErrorInfo(code=0, level=ErrorInfo.LEVEL_WARNING,
-                                  description='not localized (no map->base TF)'))
-        return errs
+            errors.append(ErrorInfo(code=ErrorCode.NONE, level=ErrorInfo.LEVEL_WARNING,
+                                    description='not localized (no map->base TF)'))
+        return errors
+
+    def _drain_battery_idle(self):
+        now = self.get_clock().now()
+        if self._last_drain_time is not None:
+            elapsed_sec = (now - self._last_drain_time).nanoseconds * 1e-9
+            self.battery -= elapsed_sec * self.params['battery_drain_per_s']
+        self._last_drain_time = now
+        self.battery = max(0.0, self.battery)
+
+    def _lookup_pose(self):
+        """Robot pose in the map frame from TF, None when not localized."""
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.params['map_frame'], self.params['base_frame'], Time())
+        except TransformException:
+            return None
+        pose = PoseStamped()
+        pose.header = transform.header
+        pose.pose.position.x = transform.transform.translation.x
+        pose.pose.position.y = transform.transform.translation.y
+        pose.pose.position.z = transform.transform.translation.z
+        pose.pose.orientation = transform.transform.rotation
+        return pose
 
     def _publish_state(self):
-        now = self.get_clock().now()
-        if self._last_drain_t is not None:
-            dt = (now - self._last_drain_t).nanoseconds * 1e-9
-            self.battery -= dt * self.prm['battery_drain_per_s']
-        self._last_drain_t = now
-        self.battery = max(0.0, self.battery)
-        try:
-            tf = self.tf.lookup_transform(self.prm['map_frame'], self.prm['base_frame'],
-                                          Time())
-            pose = PoseStamped()
-            pose.header = tf.header
-            pose.pose.position.x = tf.transform.translation.x
-            pose.pose.position.y = tf.transform.translation.y
-            pose.pose.position.z = tf.transform.translation.z
-            pose.pose.orientation = tf.transform.rotation
-            self._pose = pose
-        except TransformException:
-            self._pose = None
+        self._drain_battery_idle()
+        self._pose = self._lookup_pose()
         msg = RobotState(robot_id=self.robot_id, battery=float(self.battery),
                          charging=False, status=self._status(),
-                         capabilities=list(self.prm['capabilities']),
+                         capabilities=list(self.params['capabilities']),
                          current_task_id=self.machine.active_task_id,
                          connection_quality=-1.0,
-                         localization_score=float(self._loc_score),
+                         localization_score=float(self._localization_score),
                          errors=self._errors())
         if self._pose is not None:
             msg.pose = self._pose
         if self._velocity is not None:
             msg.velocity = self._velocity
-        self.pub_state.publish(self.meta.stamp(msg, c.TOPIC_ROBOT_STATE))
+        self.pub_state.publish(self.meta.stamp(msg, contract.TOPIC_ROBOT_STATE))
 
     def _publish_connection(self, state):
         msg = RobotConnection(robot_id=self.robot_id, state=state)
-        self.pub_conn.publish(self.meta.stamp(msg, c.TOPIC_ROBOT_CONNECTION))
+        self.pub_connection.publish(self.meta.stamp(msg, contract.TOPIC_ROBOT_CONNECTION))
 
 
 def main():

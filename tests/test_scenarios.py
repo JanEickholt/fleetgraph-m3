@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from runner import run, load
+from runner import run
 
 HERE = os.path.dirname(__file__)
 FILES = sorted(glob.glob(os.path.join(HERE, 'scenarios', '*.yaml')))

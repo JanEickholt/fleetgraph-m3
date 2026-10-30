@@ -13,46 +13,48 @@ import sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 PKG = os.path.join(ROOT, 'src', 'fleetgraph_interfaces')
-OUT = os.path.join(ROOT, 'docs', 'contracts.json')
-CONST = re.compile(r'^(\w+)\s+([A-Z][A-Z0-9_]*)\s*=\s*(\S+)')
+OUTPUT_PATH = os.path.join(ROOT, 'docs', 'contracts.json')
+CONSTANT = re.compile(r'^(\w+)\s+([A-Z][A-Z0-9_]*)\s*=\s*(\S+)')
 FIELD = re.compile(r'^([\w/]+(?:\[\])?)\s+([a-z][a-z0-9_]*)\s*$')
 
 
 def parse(path):
     fields, enums = [], {}
-    for raw in open(path):
-        line = raw.split('#', 1)[0].strip()
+    with open(path) as file:
+        raw_lines = file.readlines()
+    for raw_line in raw_lines:
+        line = raw_line.split('#', 1)[0].strip()
         if not line or line == '---':
             continue
-        m = CONST.match(line)
-        if m:
-            _, name, value = m.groups()
+        match = CONSTANT.match(line)
+        if match:
+            _, name, value = match.groups()
             prefix = name.split('_', 1)[0]           # STATE_, ERROR_, TYPE_, ...
             enums.setdefault(prefix, {})[int(value)] = name[len(prefix) + 1:]
             continue
-        m = FIELD.match(line)
-        if m:
-            fields.append({'type': m.group(1), 'name': m.group(2)})
+        match = FIELD.match(line)
+        if match:
+            fields.append({'type': match.group(1), 'name': match.group(2)})
     return fields, enums
 
 
 def main():
-    with open(os.path.join(PKG, 'package.xml')) as f:
-        version = re.search(r'<version>([^<]+)</version>', f.read()).group(1)
-    out = {'schema_version': version, 'messages': {}}
-    for sub in ('msg', 'srv'):
-        for name in sorted(os.listdir(os.path.join(PKG, sub))):
-            fields, enums = parse(os.path.join(PKG, sub, name))
-            out['messages'][name.rsplit('.', 1)[0]] = {
-                'kind': sub, 'fields': fields,
+    with open(os.path.join(PKG, 'package.xml')) as file:
+        version = re.search(r'<version>([^<]+)</version>', file.read()).group(1)
+    contracts = {'schema_version': version, 'messages': {}}
+    for kind in ('msg', 'srv'):
+        for filename in sorted(os.listdir(os.path.join(PKG, kind))):
+            fields, enums = parse(os.path.join(PKG, kind, filename))
+            contracts['messages'][filename.rsplit('.', 1)[0]] = {
+                'kind': kind, 'fields': fields,
                 # keyed by constant prefix: STATE_* -> "state" (field state),
                 # ERROR_* -> "error" (field error_code), LEVEL_* -> "level", ...
-                'enums': {k.lower(): v for k, v in enums.items()}}
-    text = json.dumps(out, indent=1) + '\n'
+                'enums': {prefix.lower(): values for prefix, values in enums.items()}}
+    text = json.dumps(contracts, indent=1) + '\n'
     if '--check' in sys.argv[1:]:
         try:
-            with open(OUT) as f:
-                current = f.read()
+            with open(OUTPUT_PATH) as file:
+                current = file.read()
         except OSError:
             current = None
         if current != text:
@@ -60,9 +62,9 @@ def main():
                   '(run python3 tools/export_contracts.py)')
             return 1
         return 0
-    with open(OUT, 'w') as f:
-        f.write(text)
-    print(f'{OUT}: {len(out["messages"])} types')
+    with open(OUTPUT_PATH, 'w') as file:
+        file.write(text)
+    print(f'{OUTPUT_PATH}: {len(contracts["messages"])} types')
     return 0
 
 

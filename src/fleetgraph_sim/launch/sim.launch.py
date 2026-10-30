@@ -16,10 +16,10 @@ from launch_ros.descriptions import ParameterValue
 
 
 def generate_launch_description():
-    pkg = get_package_share_directory('fleetgraph_sim')
-    world = os.path.join(pkg, 'worlds', 'lab_floor.sdf')
-    xacro_file = os.path.join(pkg, 'urdf', 'robot.urdf.xacro')
-    bridge_file = os.path.join(pkg, 'config', 'bridge.yaml')
+    share_dir = get_package_share_directory('fleetgraph_sim')
+    world = os.path.join(share_dir, 'worlds', 'lab_floor.sdf')
+    xacro_file = os.path.join(share_dir, 'urdf', 'robot.urdf.xacro')
+    bridge_file = os.path.join(share_dir, 'config', 'bridge.yaml')
     gz_sim_launch = os.path.join(
         get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')
 

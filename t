@@ -45,26 +45,26 @@ fi
 cleanup_ros() {
   exec_ros '
     # every pattern has a [x] bracket so it never matches this shell itself
-    pats="[g]z sim|[r]os2 launch|[r]os2 run|[p]arameter_bridge|/opt/ros/jazzy/lib/[n]av2_|[c]omponent_container|[f]leetgraph_robot/lib|/opt/ros/jazzy/lib/[r]obot_state_publisher"
-    IFS="|"; for p in $pats; do pkill -f "$p" 2>/dev/null; done
+    patterns="[g]z sim|[r]os2 launch|[r]os2 run|[p]arameter_bridge|/opt/ros/jazzy/lib/[n]av2_|[c]omponent_container|[f]leetgraph_robot/lib|/opt/ros/jazzy/lib/[r]obot_state_publisher"
+    IFS="|"; for pattern in $patterns; do pkill -f "$pattern" 2>/dev/null; done
     sleep 2
-    for p in $pats; do pkill -9 -f "$p" 2>/dev/null; done
+    for pattern in $patterns; do pkill -9 -f "$pattern" 2>/dev/null; done
     unset IFS
-    for i in $(seq 1 30); do
-      n=$(pgrep -fc "[g]z sim|[p]arameter_bridge|[c]omponent_container|/opt/ros/jazzy/lib/[n]av2_|[f]leetgraph_robot/lib" || true)
-      [ "$n" = "0" ] && break
+    for attempt in $(seq 1 30); do
+      leftover=$(pgrep -fc "[g]z sim|[p]arameter_bridge|[c]omponent_container|/opt/ros/jazzy/lib/[n]av2_|[f]leetgraph_robot/lib" || true)
+      [ "$leftover" = "0" ] && break
       sleep 2
     done
-    echo "leftover ROS processes: $n" >&2
-    [ "$n" = "0" ]'
+    echo "leftover ROS processes: $leftover" >&2
+    [ "$leftover" = "0" ]'
 }
 
 cleanup_ros || { echo "ABORT: leftover ROS processes will not die" >&2; exit 9; }
 
 set +e
 run_pytest "$@"
-rc=$?
+pytest_status=$?
 set -e
 
 cleanup_ros || echo "WARNING: leftover ROS processes after run" >&2
-exit $rc
+exit $pytest_status

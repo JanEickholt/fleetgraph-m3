@@ -18,194 +18,222 @@ import yaml
 import assertions
 from recorder import Recorder
 
-SOURCE = ('source /opt/ros/jazzy/setup.bash && '
-          'source /home/ubuntu/ws/install/setup.bash 2>/dev/null')
-
+ROS_SETUP = ('source /opt/ros/jazzy/setup.bash && '
+             'source /home/ubuntu/ws/install/setup.bash 2>/dev/null')
 
 ACTION_KINDS = ('run', 'launch', 'publish')
 MOCK_DATA = os.environ.get('FLEETGRAPH_MOCK_DATA', '/home/ubuntu/mock_data')
+DEFAULT_SIM_READY_TIMEOUT_SEC = 240
+DEFAULT_CLOCK_STALL_SEC = 30
 
 
 class ScenarioError(Exception):
     pass
 
 
-def validate(sc, origin='scenario'):
-    if not isinstance(sc, dict):
+def _assertion_kind(assertion):
+    """The single assertion type named in one `assert` entry."""
+    return next(key for key in assertion if key in assertions.REGISTRY)
+
+
+def validate(scenario, origin='scenario'):
+    if not isinstance(scenario, dict):
         raise ScenarioError(
             f"{origin}: scenario file is empty or not a mapping")
     for key in ('name', 'topics', 'actions', 'assert', 'window_sec'):
-        if key not in sc:
+        if key not in scenario:
             raise ScenarioError(f"{origin}: missing required key '{key}'")
-    for a in sc['assert']:
-        kinds = [k for k in a if k in assertions.REGISTRY]
+    for assertion in scenario['assert']:
+        kinds = [key for key in assertion if key in assertions.REGISTRY]
         if len(kinds) != 1:
             raise ScenarioError(
                 f"{origin}: each assert needs exactly one type out of "
-                f"{sorted(assertions.REGISTRY)}, got: {a}")
-    for act in sc['actions']:
-        kinds = [k for k in act if k in ACTION_KINDS]
-        if len(kinds) != 1 or 't' not in act:
+                f"{sorted(assertions.REGISTRY)}, got: {assertion}")
+    for action in scenario['actions']:
+        kinds = [key for key in action if key in ACTION_KINDS]
+        if len(kinds) != 1 or 't' not in action:
             raise ScenarioError(
                 f"{origin}: each action needs 't' plus exactly one of "
-                f"{list(ACTION_KINDS)}, got: {act}")
-    return sc
+                f"{list(ACTION_KINDS)}, got: {action}")
+    return scenario
 
 
 def load(path):
-    with open(path) as f:
-        return validate(yaml.safe_load(f), origin=path)
+    with open(path) as file:
+        return validate(yaml.safe_load(file), origin=path)
 
 
-class Proc:
-    def __init__(self, cmd, env=None, tag='proc'):
-        e = dict(os.environ)
+class ManagedProcess:
+    """A ROS command in its own process group, logged to /tmp/harness_<tag>.log."""
+
+    def __init__(self, command, env=None, tag='proc'):
+        process_env = dict(os.environ)
         if env:
-            e.update({str(k): str(v) for k, v in env.items()})
+            process_env.update({str(key): str(value) for key, value in env.items()})
         self.tag = tag
         self.log_path = f"/tmp/harness_{tag}.log"
         self.log = open(self.log_path, 'w')
-        self.p = subprocess.Popen(
-            ['bash', '-c', f'{SOURCE} && exec {cmd}'],
-            env=e, preexec_fn=os.setsid,
+        self.process = subprocess.Popen(
+            ['bash', '-c', f'{ROS_SETUP} && exec {command}'],
+            env=process_env, preexec_fn=os.setsid,
             stdout=self.log, stderr=subprocess.STDOUT)
 
     def stop(self):
         try:
-            os.killpg(os.getpgid(self.p.pid), signal.SIGTERM)
-            self.p.wait(timeout=8)
+            os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+            self.process.wait(timeout=8)
         except Exception:
             try:
-                os.killpg(os.getpgid(self.p.pid), signal.SIGKILL)
+                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
             except Exception:
                 pass
         self.log.close()
 
-    def log_tail(self, lines=5):
+    def log_tail(self, line_count=5):
         try:
-            with open(self.log_path) as f:
-                return [l.rstrip() for l in f.readlines()[-lines:]]
+            with open(self.log_path) as file:
+                return [line.rstrip() for line in file.readlines()[-line_count:]]
         except OSError:
             return []
 
 
 class View:
-    def __init__(self, rec):
-        self.rec = rec
+    """What assertions see of a recording: stream(topic) and duration()."""
+
+    def __init__(self, recorder):
+        self.recorder = recorder
 
     def stream(self, topic):
-        return self.rec.streams.get(topic, [])
+        return self.recorder.streams.get(topic, [])
 
     def duration(self):
-        return self.rec.elapsed()
+        return self.recorder.elapsed()
 
 
-def _evidence(rec, procs):
-    ev = {'window_elapsed_sec': round(rec.elapsed(), 1)}
-    for topic, stream in rec.streams.items():
-        ev[topic] = {'count': len(stream),
-                     'per_sec': round(len(stream) / max(rec.elapsed(), 1e-9), 1)}
+def _task_history(task_updates):
+    """Per task: compressed state history [(sim t, source, state, code)]."""
+    history = {}
+    for timestamp, msg in task_updates:
+        entries = history.setdefault(msg.task_id, [])
+        entry = (round(timestamp, 1), msg.meta.source_id, msg.state, msg.error_code)
+        if not entries or entries[-1][1:] != entry[1:]:
+            entries.append(entry)
+    return history
+
+
+def _evidence(recorder, processes):
+    elapsed = recorder.elapsed()
+    evidence = {'window_elapsed_sec': round(elapsed, 1)}
+    for topic, stream in recorder.streams.items():
+        evidence[topic] = {'count': len(stream),
+                           'per_sec': round(len(stream) / max(elapsed, 1e-9), 1)}
     for topic in ('/odom', '/ground_truth/odom'):
-        if rec.streams.get(topic):
-            p = rec.streams[topic][-1][1].pose.pose.position
-            ev[f'last{topic.replace("/", "_")}'] = [round(p.x, 2), round(p.y, 2)]
-    if rec.streams.get('/fleet/task_update'):
-        # per task: compressed state history [(sim t, source, state, code)]
-        hist = {}
-        for t, m in rec.streams['/fleet/task_update']:
-            h = hist.setdefault(m.task_id, [])
-            entry = (round(t, 1), m.meta.source_id, m.state, m.error_code)
-            if not h or h[-1][1:] != entry[1:]:
-                h.append(entry)
-        ev['task_history'] = hist
-    for proc in procs:
-        tail = proc.log_tail()
+        if recorder.streams.get(topic):
+            position = recorder.streams[topic][-1][1].pose.pose.position
+            key = f'last{topic.replace("/", "_")}'
+            evidence[key] = [round(position.x, 2), round(position.y, 2)]
+    if recorder.streams.get('/fleet/task_update'):
+        evidence['task_history'] = _task_history(recorder.streams['/fleet/task_update'])
+    for process in processes:
+        tail = process.log_tail()
         if tail:
-            ev[f'log_{proc.tag}'] = tail
-    return ev
+            evidence[f'log_{process.tag}'] = tail
+    return evidence
+
+
+def _start_action(action):
+    """Start the process for a `run` or `launch` action (None for `publish`)."""
+    if 'run' in action:
+        run_spec = action['run']
+        # {mock_data} in args = mounted mock_data/ directory
+        args = str(run_spec.get('args', '')).replace('{mock_data}', MOCK_DATA)
+        return ManagedProcess(
+            f"ros2 run {run_spec['pkg']} {run_spec['exec']} {args}",
+            tag=run_spec.get('tag', run_spec['exec']))
+    if 'launch' in action:
+        launch_spec = action['launch']                 # "<package> <file>.launch.py ..."
+        launch_name = launch_spec.split()[1].split('.')[0]
+        return ManagedProcess(f"ros2 launch {launch_spec}", tag='launch_' + launch_name)
+    return None
+
+
+def _wait_for_clock(recorder, sim):
+    timeout_sec = sim.get('ready_timeout_sec', DEFAULT_SIM_READY_TIMEOUT_SEC)
+    deadline = time.time() + float(timeout_sec)
+    while recorder.clock_sec is None:
+        rclpy.spin_once(recorder, timeout_sec=0.2)
+        if time.time() > deadline:
+            raise ScenarioError(
+                f"sim did not publish /clock within {timeout_sec}s wall time")
 
 
 def run(path):
-    sc = load(path)
+    scenario = load(path)
     os.environ['ROS_DOMAIN_ID'] = str(random.randint(2, 99))
     rclpy.init()
-    rec = None
-    procs = []
-    result = {'name': sc['name'], 'passed': False, 'failures': [],
-              'expect_failure': bool(sc.get('expect_failure')), 'evidence': {}}
+    recorder = None
+    processes = []
+    result = {'name': scenario['name'], 'passed': False, 'failures': [],
+              'expect_failure': bool(scenario.get('expect_failure')), 'evidence': {}}
     try:
-        rec = Recorder()
-        for topic, type_name in sc['topics'].items():
-            rec.watch(topic, type_name)
+        recorder = Recorder()
+        for topic, type_name in scenario['topics'].items():
+            recorder.watch(topic, type_name)
 
-        sim = sc.get('sim')
+        sim = scenario.get('sim')
         if sim:
-            procs.append(Proc(f"ros2 launch {sim['launch']}",
-                              env=sim.get('env'), tag='sim'))
-            deadline = time.time() + float(sim.get('ready_timeout_sec', 240))
-            while rec.clock_t is None:
-                rclpy.spin_once(rec, timeout_sec=0.2)
-                if time.time() > deadline:
-                    raise ScenarioError(
-                        f"sim did not publish /clock within "
-                        f"{sim.get('ready_timeout_sec', 240)}s wall time")
+            processes.append(ManagedProcess(f"ros2 launch {sim['launch']}",
+                                            env=sim.get('env'), tag='sim'))
+            _wait_for_clock(recorder, sim)
 
-        rec.start_window()
+        recorder.start_window()
         # watchdog: a dead/frozen Gazebo stops publishing /clock, which
         # would freeze elapsed() and hang the suite forever. Fail fast
         # on clock stall instead (wall-time check, sim-present only).
-        clock_stall_sec = float(sim.get('clock_stall_sec', 30)) if sim else None
-        last_clock_wall = time.time()
-        publishers = [rec.make_publisher(a['publish'])
-                      for a in sc['actions'] if 'publish' in a]
-        pending = sorted(sc['actions'], key=lambda a: a['t'])
-        window = float(sc['window_sec'])
+        clock_stall_sec = (float(sim.get('clock_stall_sec', DEFAULT_CLOCK_STALL_SEC))
+                           if sim else None)
+        last_seen_clock = None
+        last_clock_progress_wall = time.time()
+        publishers = [recorder.make_publisher(action['publish'])
+                      for action in scenario['actions'] if 'publish' in action]
+        pending_actions = sorted(scenario['actions'], key=lambda action: action['t'])
+        window_sec = float(scenario['window_sec'])
 
         while True:
-            rclpy.spin_once(rec, timeout_sec=0.05)
-            now = rec.elapsed()
+            rclpy.spin_once(recorder, timeout_sec=0.05)
+            now = recorder.elapsed()
             if clock_stall_sec is not None:
-                prev = getattr(rec, '_watch_clock_t', None)
-                if rec.clock_t is not None and rec.clock_t != prev:
-                    rec._watch_clock_t = rec.clock_t
-                    last_clock_wall = time.time()
-                if time.time() - last_clock_wall > clock_stall_sec:
+                if recorder.clock_sec is not None and recorder.clock_sec != last_seen_clock:
+                    last_seen_clock = recorder.clock_sec
+                    last_clock_progress_wall = time.time()
+                if time.time() - last_clock_progress_wall > clock_stall_sec:
                     raise ScenarioError(
                         f"sim stalled: no /clock progress for "
                         f"{clock_stall_sec}s wall time "
-                        f"(window was {now:.1f}/{window} sim s)")
-            while pending and pending[0]['t'] <= now:
-                act = pending.pop(0)
-                if 'run' in act:
-                    r = act['run']
-                    # {mock_data} in args = mounted mock_data/ directory
-                    args = str(r.get('args', '')).replace('{mock_data}', MOCK_DATA)
-                    procs.append(Proc(
-                        f"ros2 run {r['pkg']} {r['exec']} {args}",
-                        tag=r.get('tag', r['exec'])))
-                elif 'launch' in act:
-                    spec = act['launch']
-                    procs.append(Proc(f"ros2 launch {spec}",
-                                      tag='launch_' + spec.split()[1].split('.')[0]))
-            for pub in publishers:
-                pub.tick(now)
-            if now >= window:
+                        f"(window was {now:.1f}/{window_sec} sim s)")
+            while pending_actions and pending_actions[0]['t'] <= now:
+                process = _start_action(pending_actions.pop(0))
+                if process is not None:
+                    processes.append(process)
+            for publisher in publishers:
+                publisher.tick(now)
+            if now >= window_sec:
                 break
 
-        view = View(rec)
-        for a in sc['assert']:
-            kind = [k for k in a if k in assertions.REGISTRY][0]
-            err = assertions.REGISTRY[kind](view, **dict(a[kind]))
-            if err:
-                result['failures'].append(f"{kind}: {err}")
+        view = View(recorder)
+        for assertion in scenario['assert']:
+            kind = _assertion_kind(assertion)
+            failure = assertions.REGISTRY[kind](view, **dict(assertion[kind]))
+            if failure:
+                result['failures'].append(f"{kind}: {failure}")
 
         result['passed'] = not result['failures']
-        result['evidence'] = _evidence(rec, procs)
+        result['evidence'] = _evidence(recorder, processes)
     finally:
-        for proc in procs:
-            proc.stop()
-        if rec is not None:
-            rec.destroy_node()
+        for process in processes:
+            process.stop()
+        if recorder is not None:
+            recorder.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
     return result

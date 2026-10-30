@@ -22,17 +22,27 @@ DEFAULT_RATE_MARGIN = 0.2
 REGISTRY = {}
 
 
-def register(fn):
-    REGISTRY[fn.__name__] = fn
-    return fn
+def register(function):
+    REGISTRY[function.__name__] = function
+    return function
 
 
-def _get(obj, dotted):
+def _get_field(obj, dotted_path):
     """Follow a dotted field path on messages (getattr) or dicts ([])."""
-    cur = obj
-    for part in dotted.split('.'):
-        cur = cur[part] if isinstance(cur, dict) else getattr(cur, part)
-    return cur
+    value = obj
+    for part in dotted_path.split('.'):
+        value = value[part] if isinstance(value, dict) else getattr(value, part)
+    return value
+
+
+def _distance_xy(position, x, y):
+    return math.hypot(float(_get_field(position, 'x')) - float(x),
+                      float(_get_field(position, 'y')) - float(y))
+
+
+def _yaw_deg(orientation):
+    x, y, z, w = orientation.x, orientation.y, orientation.z, orientation.w
+    return math.degrees(math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
 @register
@@ -54,31 +64,27 @@ def min_rate(view, topic, hz, margin=None, **_):
     if span <= 0:
         return f"messages on {topic} span {span}s, cannot estimate rate"
     actual = (len(stream) - 1) / span
-    m = DEFAULT_RATE_MARGIN if margin is None else float(margin)
-    required = float(hz) * (1.0 - m)
+    margin_fraction = DEFAULT_RATE_MARGIN if margin is None else float(margin)
+    required = float(hz) * (1.0 - margin_fraction)
     if actual < required:
         return (f"rate {actual:.2f} Hz < required {required:.2f} Hz "
-                f"(nominal {hz} - {m:.0%} margin) on {topic}")
+                f"(nominal {hz} - {margin_fraction:.0%} margin) on {topic}")
     return None
 
 
 @register
 def arrives_at(view, topic, x, y, tol, **_):
-    for t, msg in view.stream(topic):
-        pos = _get(msg, 'pose.pose.position')
-        dx = float(_get(pos, 'x')) - float(x)
-        dy = float(_get(pos, 'y')) - float(y)
-        if math.hypot(dx, dy) <= float(tol):
-            return None
     stream = view.stream(topic)
+    for _, msg in stream:
+        if _distance_xy(_get_field(msg, 'pose.pose.position'), x, y) <= float(tol):
+            return None
     if not stream:
         return f"no messages on {topic}"
-    last = _get(stream[-1][1], 'pose.pose.position')
-    dist = math.hypot(float(_get(last, 'x')) - float(x),
-                      float(_get(last, 'y')) - float(y))
+    last = _get_field(stream[-1][1], 'pose.pose.position')
     return (f"never came within {tol} of ({x}, {y}); "
-            f"last pose ({float(_get(last, 'x')):.2f}, "
-            f"{float(_get(last, 'y')):.2f}), distance {dist:.2f}")
+            f"last pose ({float(_get_field(last, 'x')):.2f}, "
+            f"{float(_get_field(last, 'y')):.2f}), "
+            f"distance {_distance_xy(last, x, y):.2f}")
 
 
 @register
@@ -86,18 +92,18 @@ def never_below(view, topic, field, threshold, **_):
     # NaN compares False against everything, so `min()` over a stream
     # containing NaN silently discards it. Check EVERY element; NaN
     # anywhere = violation (safety assertions fail closed on unknown).
-    for t, msg in view.stream(topic):
-        raw = _get(msg, field)
+    for _, msg in view.stream(topic):
+        raw = _get_field(msg, field)
         values = list(raw) if isinstance(raw, (list, tuple)) else [raw]
-        for v in values:
+        for raw_value in values:
             try:
-                v = float(v)
+                value = float(raw_value)
             except (TypeError, ValueError):
                 continue
-            if v != v:
+            if math.isnan(value):
                 return f"{topic}.{field} produced NaN — treated as violation"
-            if v < float(threshold):
-                return f"{topic}.{field} hit {v:.3f} < {threshold}"
+            if value < float(threshold):
+                return f"{topic}.{field} hit {value:.3f} < {threshold}"
     if not view.stream(topic):
         return f"no messages on {topic}"
     return None
@@ -108,7 +114,7 @@ def final_value(view, topic, field, equals, tol=0.01, **_):
     stream = view.stream(topic)
     if not stream:
         return f"no messages on {topic}"
-    value = _get(stream[-1][1], field)
+    value = _get_field(stream[-1][1], field)
     if isinstance(value, (list, tuple)):
         return f"final_value on array field '{field}' is not supported"
     if abs(float(value) - float(equals)) > float(tol):
@@ -127,14 +133,12 @@ def yaw_final(view, topic, deg, tol, **_):
     stream = view.stream(topic)
     if not stream:
         return f"no messages on {topic}"
-    q = _get(stream[-1][1], 'pose.pose.orientation')
-    yaw = math.degrees(math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z)))
-    err = (yaw - float(deg) + 180.0) % 360.0 - 180.0
-    if abs(err) <= float(tol):
+    yaw = _yaw_deg(_get_field(stream[-1][1], 'pose.pose.orientation'))
+    error_deg = (yaw - float(deg) + 180.0) % 360.0 - 180.0
+    if abs(error_deg) <= float(tol):
         return None
     return (f"final yaw {yaw:.2f} deg vs target {deg}, "
-            f"|err| {abs(err):.2f} deg > {tol}")
+            f"|err| {abs(error_deg):.2f} deg > {tol}")
 
 
 # ---------------------------------------------------------------- tasks
@@ -144,21 +148,22 @@ def yaw_final(view, topic, deg, tol, **_):
 TASK_STATES = {'RECEIVED': 0, 'PARSED': 1, 'QUEUED': 2, 'ASSIGNED': 3,
                'EXECUTING': 4, 'COMPLETED': 5, 'FAILED': 6, 'CANCELLED': 7,
                'REASSIGNED': 8, 'REJECTED': 9}
-_STATE_NAMES = {v: k for k, v in TASK_STATES.items()}
+_STATE_NAMES = {value: name for name, value in TASK_STATES.items()}
 
 
 def _task_events(view, topic, task_id, source=None):
-    return [(t, m) for t, m in view.stream(topic)
-            if m.task_id == task_id and
-            (source is None or m.meta.source_id == source)]
+    return [(timestamp, msg) for timestamp, msg in view.stream(topic)
+            if msg.task_id == task_id and
+            (source is None or msg.meta.source_id == source)]
 
 
 def _history(events):
+    """State names in order, consecutive repeats collapsed."""
     names = []
-    for _, m in events:
-        n = _STATE_NAMES.get(m.state, str(m.state))
-        if not names or names[-1] != n:
-            names.append(n)
+    for _, msg in events:
+        name = _STATE_NAMES.get(msg.state, str(msg.state))
+        if not names or names[-1] != name:
+            names.append(name)
     return names
 
 
@@ -167,18 +172,18 @@ def task_state(view, task_id, state, topic='/fleet/task_update',
                error_code=None, source=None, within_sec=None, **_):
     """Some TaskUpdate for task_id has `state` (+ error_code / source, and
     sim time <= within_sec if given)."""
-    want = TASK_STATES[state]
+    wanted_state = TASK_STATES[state]
     events = _task_events(view, topic, task_id, source)
-    for t, m in events:
-        if m.state != want:
+    for timestamp, msg in events:
+        if msg.state != wanted_state:
             continue
-        if error_code is not None and m.error_code != int(error_code):
+        if error_code is not None and msg.error_code != int(error_code):
             continue
-        if within_sec is not None and t > float(within_sec):
-            return (f"task {task_id} reached {state} only at t={t:.1f}s "
+        if within_sec is not None and timestamp > float(within_sec):
+            return (f"task {task_id} reached {state} only at t={timestamp:.1f}s "
                     f"> {within_sec}s")
         return None
-    codes = sorted({m.error_code for _, m in events})
+    codes = sorted({msg.error_code for _, msg in events})
     return (f"task {task_id} never reached {state}"
             f"{'' if error_code is None else f' with code {error_code}'}; "
             f"history {_history(events)}, codes {codes}")
@@ -192,14 +197,14 @@ def seq_contiguous(view, topic, **_):
     stream = view.stream(topic)
     if not stream:
         return f"no messages on {topic}"
-    last = {}
-    for t, m in stream:
-        src, seq = m.meta.source_id, int(m.meta.seq)
-        if src in last and seq != last[src] + 1:
-            kind = 'duplicate/reorder' if seq <= last[src] else 'gap (lost events)'
-            return (f"{topic} source {src}: seq {last[src]} -> {seq} at "
-                    f"t={t:.1f}s, {kind}")
-        last[src] = seq
+    last_seq = {}                  # source_id -> last recorded seq
+    for timestamp, msg in stream:
+        source, seq = msg.meta.source_id, int(msg.meta.seq)
+        if source in last_seq and seq != last_seq[source] + 1:
+            kind = 'duplicate/reorder' if seq <= last_seq[source] else 'gap (lost events)'
+            return (f"{topic} source {source}: seq {last_seq[source]} -> {seq} at "
+                    f"t={timestamp:.1f}s, {kind}")
+        last_seq[source] = seq
     return None
 
 
@@ -207,12 +212,12 @@ def seq_contiguous(view, topic, **_):
 def task_sequence(view, task_id, states, topic='/fleet/task_update', **_):
     """The task's state history contains `states` in this order
     (other states may occur in between)."""
-    hist = _history(_task_events(view, topic, task_id))
-    i = 0
-    for name in hist:
-        if i < len(states) and name == states[i]:
-            i += 1
-    if i == len(states):
+    history = _history(_task_events(view, topic, task_id))
+    matched = 0
+    for name in history:
+        if matched < len(states) and name == states[matched]:
+            matched += 1
+    if matched == len(states):
         return None
-    return (f"task {task_id}: expected order {states}, history {hist} "
-            f"(missing from {states[i]})")
+    return (f"task {task_id}: expected order {states}, history {history} "
+            f"(missing from {states[matched]})")

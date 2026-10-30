@@ -6,7 +6,6 @@ active timebase, never wall time when a sim is present.
 """
 import time
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
@@ -25,9 +24,9 @@ CONTRACT_QOS_LATCHED = QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELI
                                   durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
-def hydrate(cls, data):
+def hydrate(msg_class, data):
     """Build an rclpy message from a (possibly nested) dict."""
-    msg = cls()
+    msg = msg_class()
     for key, value in data.items():
         if isinstance(value, dict):
             setattr(msg, key, hydrate(type(getattr(msg, key)), value))
@@ -36,30 +35,32 @@ def hydrate(cls, data):
     return msg
 
 
-class _Publisher:
+class _ScenarioPublisher:
+    """A scenario `publish` action: msg at hz from t for duration seconds."""
+
     def __init__(self, node, spec):
         self.spec = spec
-        self.cls = get_message(spec['type'])
-        self.pub = node.create_publisher(self.cls, spec['topic'], 10)
-        self._next_t = None
+        self.msg_class = get_message(spec['type'])
+        self.publisher = node.create_publisher(self.msg_class, spec['topic'], 10)
+        self._next_publish_time = None
 
     def tick(self, now):
         start = float(self.spec.get('t', 0))
         duration = float(self.spec.get('duration', 1))
         if now < start or now > start + duration:
             return
-        if self._next_t is None or now >= self._next_t:
-            self.pub.publish(hydrate(self.cls, self.spec.get('msg', {})))
-            self._next_t = now + 1.0 / float(self.spec.get('hz', 10))
+        if self._next_publish_time is None or now >= self._next_publish_time:
+            self.publisher.publish(hydrate(self.msg_class, self.spec.get('msg', {})))
+            self._next_publish_time = now + 1.0 / float(self.spec.get('hz', 10))
 
 
 class Recorder(Node):
     def __init__(self):
         super().__init__('harness_recorder')
-        self.streams = {}          # topic -> list[(t, msg)]
-        self.clock_t = None        # latest /clock value (sim seconds)
-        self._clock_t0 = None
-        self._wall_t0 = None
+        self.streams = {}              # topic -> list[(t, msg)]
+        self.clock_sec = None          # latest /clock value (sim seconds)
+        self._window_start_clock = None
+        self._window_start_wall = None
         # sensor-data QoS (best effort) receives from both best-effort
         # (gz bridge) and reliable (ros2 run) publishers; the reverse
         # would silently miss bridge topics.
@@ -67,14 +68,14 @@ class Recorder(Node):
                                  qos_profile_sensor_data)
 
     def _on_clock(self, msg):
-        self.clock_t = msg.clock.sec + msg.clock.nanosec * 1e-9
+        self.clock_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
 
     def watch(self, topic, type_name):
         self.streams.setdefault(topic, [])
-        cls = get_message(type_name)
+        msg_class = get_message(type_name)
 
-        def store(m, _topic=topic):
-            self.streams[_topic].append((self.elapsed(), m))
+        def store(msg):
+            self.streams[topic].append((self.elapsed(), msg))
 
         # Contract topics (/fleet/*) have reliable publishers by contract and
         # come in bursts (mock M1 emits RECEIVED/PARSED/QUEUED for several
@@ -86,18 +87,19 @@ class Recorder(Node):
             qos = CONTRACT_QOS
         else:
             qos = qos_profile_sensor_data
-        self.create_subscription(cls, topic, store, qos)
+        self.create_subscription(msg_class, topic, store, qos)
 
     def make_publisher(self, spec):
-        return _Publisher(self, spec)
+        return _ScenarioPublisher(self, spec)
 
     def start_window(self):
-        self._wall_t0 = time.time()
-        self._clock_t0 = self.clock_t
+        self._window_start_wall = time.time()
+        self._window_start_clock = self.clock_sec
 
     def elapsed(self):
-        if self.clock_t is not None:
-            base = self._clock_t0 if self._clock_t0 is not None else self.clock_t
-            return self.clock_t - base
-        base = self._wall_t0 if self._wall_t0 is not None else time.time()
-        return time.time() - base
+        if self.clock_sec is not None:
+            start = (self._window_start_clock if self._window_start_clock is not None
+                     else self.clock_sec)
+            return self.clock_sec - start
+        start = self._window_start_wall if self._window_start_wall is not None else time.time()
+        return time.time() - start

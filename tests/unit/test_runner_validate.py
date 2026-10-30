@@ -27,35 +27,35 @@ def test_empty_scenario_file():
 
 
 def test_missing_key():
-    sc = dict(GOOD)
-    del sc['window_sec']
+    scenario = dict(GOOD)
+    del scenario['window_sec']
     with pytest.raises(ScenarioError, match='window_sec'):
-        validate(sc)
+        validate(scenario)
 
 
 def test_unknown_assertion_type():
-    sc = dict(GOOD)
-    sc['assert'] = [{'teleports_to': {'x': 1}}]
+    scenario = dict(GOOD)
+    scenario['assert'] = [{'teleports_to': {'x': 1}}]
     with pytest.raises(ScenarioError, match="exactly one type"):
-        validate(sc)
+        validate(scenario)
 
 
 def test_assert_with_two_types():
-    sc = dict(GOOD)
-    sc['assert'] = [{'publishes': {'topic': '/t'}, 'min_rate': {'topic': '/t', 'hz': 1}}]
+    scenario = dict(GOOD)
+    scenario['assert'] = [{'publishes': {'topic': '/t'}, 'min_rate': {'topic': '/t', 'hz': 1}}]
     with pytest.raises(ScenarioError, match='exactly one type'):
-        validate(sc)
+        validate(scenario)
 
 
 def test_unknown_action_type():
-    sc = dict(GOOD)
-    sc['actions'] = [{'t': 0, 'teleport': {'x': 1}}]
+    scenario = dict(GOOD)
+    scenario['actions'] = [{'t': 0, 'teleport': {'x': 1}}]
     with pytest.raises(ScenarioError, match="'run', 'launch', 'publish'"):
-        validate(sc)
+        validate(scenario)
 
 
 def test_action_without_t():
-    sc = dict(GOOD)
-    sc['actions'] = [{'run': {'pkg': 'a', 'exec': 'b'}}]
+    scenario = dict(GOOD)
+    scenario['actions'] = [{'run': {'pkg': 'a', 'exec': 'b'}}]
     with pytest.raises(ScenarioError, match="'t'"):
-        validate(sc)
+        validate(scenario)
