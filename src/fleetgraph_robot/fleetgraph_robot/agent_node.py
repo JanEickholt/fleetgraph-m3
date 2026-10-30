@@ -5,8 +5,8 @@ TaskUpdate, RobotState (heartbeat) and RobotConnection.
   ros2 run fleetgraph_robot agent --ros-args -p robot_id:=robot_1 -p use_sim_time:=true
 
 Pose comes from TF map -> base_footprint (AMCL), never from Gazebo ground
-truth. Battery is a simple model (distance + idle drain) until a real
-battery source exists.
+truth. Battery is a simple model (battery.py) until a real battery
+source exists.
 """
 import math
 
@@ -26,6 +26,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from fleetgraph_interfaces.msg import (
     ErrorInfo, RobotConnection, RobotState, TaskAssignment, TaskCommand, TaskUpdate)
 from fleetgraph_robot import contract
+from fleetgraph_robot.battery import BatteryModel
 from fleetgraph_robot.task_machine import (
     CancelNavigation, ErrorCode, Navigate, TaskMachine, Update, Wait)
 
@@ -85,9 +86,9 @@ class Agent(Node):
         self._dwell_timer = None
         self._last_feedback_time = None
 
-        self.battery = float(self.params['battery_initial'])
-        self._last_odom_xy = None
-        self._last_drain_time = None
+        self.battery = BatteryModel(self.params['battery_initial'],
+                                    drain_per_m=self.params['battery_drain_per_m'],
+                                    drain_per_s=self.params['battery_drain_per_s'])
         self._velocity = None
         self._localization_score = -1.0
         self._pose = None
@@ -107,7 +108,7 @@ class Agent(Node):
                                            RobotState.STATUS_ERROR)
         self.get_logger().info(
             f'assignment {spec.task_id} rev {spec.assignment_rev} type {spec.type}')
-        self._dispatch(self.machine.assign(spec, self.battery, available))
+        self._dispatch(self.machine.assign(spec, self.battery.level, available))
 
     def _on_command(self, msg):
         if msg.robot_id != self.robot_id:
@@ -119,11 +120,7 @@ class Agent(Node):
     def _on_odom(self, msg):
         self._velocity = msg.twist.twist
         position = msg.pose.pose.position
-        if self._last_odom_xy is not None:
-            last_x, last_y = self._last_odom_xy
-            moved = math.hypot(position.x - last_x, position.y - last_y)
-            self.battery -= moved * self.params['battery_drain_per_m']
-        self._last_odom_xy = (position.x, position.y)
+        self.battery.moved_to(position.x, position.y)
 
     def _on_amcl_pose(self, msg):
         covariance = msg.pose.covariance
@@ -243,22 +240,14 @@ class Agent(Node):
 
     def _errors(self):
         errors = []
-        if self.battery < self.params['min_battery']:
+        if self.battery.level < self.params['min_battery']:
             errors.append(ErrorInfo(code=ErrorCode.LOW_BATTERY,
                                     level=ErrorInfo.LEVEL_WARNING,
-                                    description=f'battery {self.battery:.2f}'))
+                                    description=f'battery {self.battery.level:.2f}'))
         if self._pose is None:
             errors.append(ErrorInfo(code=ErrorCode.NONE, level=ErrorInfo.LEVEL_WARNING,
                                     description='not localized (no map->base TF)'))
         return errors
-
-    def _drain_battery_idle(self):
-        now = self.get_clock().now()
-        if self._last_drain_time is not None:
-            elapsed_sec = (now - self._last_drain_time).nanoseconds * 1e-9
-            self.battery -= elapsed_sec * self.params['battery_drain_per_s']
-        self._last_drain_time = now
-        self.battery = max(0.0, self.battery)
 
     def _lookup_pose(self):
         """Robot pose in the map frame from TF, None when not localized."""
@@ -276,9 +265,9 @@ class Agent(Node):
         return pose
 
     def _publish_state(self):
-        self._drain_battery_idle()
+        self.battery.tick(self.get_clock().now().nanoseconds * 1e-9)
         self._pose = self._lookup_pose()
-        msg = RobotState(robot_id=self.robot_id, battery=float(self.battery),
+        msg = RobotState(robot_id=self.robot_id, battery=float(self.battery.level),
                          charging=False, status=self._status(),
                          capabilities=list(self.params['capabilities']),
                          current_task_id=self.machine.active_task_id,

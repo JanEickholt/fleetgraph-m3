@@ -51,7 +51,8 @@ With a display: `sim.launch.py headless:=false`, plus the course's `compose.wslg
 |---|---|
 | `src/fleetgraph_interfaces/` | shared contract messages (proposal 0.1.0) |
 | `src/fleetgraph_robot/task_machine.py` | robot task state machine — pure Python, unit-tested |
-| `src/fleetgraph_robot/agent_node.py` | ROS node: contract topics ↔ state machine ↔ Nav2, RobotState heartbeat, battery model |
+| `src/fleetgraph_robot/battery.py` | simulated battery (distance + idle drain) — pure Python, unit-tested |
+| `src/fleetgraph_robot/agent_node.py` | ROS node: contract topics ↔ state machine ↔ Nav2, RobotState heartbeat |
 | `src/fleetgraph_robot/mock_orchestrator.py` | mock Module 1: replays task scripts, M1-side lifecycle, resend-until-ack, JSONL event log + metrics |
 | `src/fleetgraph_sim/` | world/map/locations (generated), robot URDF, gz bridge, Nav2 params, launch |
 | `tools/gen_world.py` | single spec → Gazebo world + Nav2 map + location registry |
