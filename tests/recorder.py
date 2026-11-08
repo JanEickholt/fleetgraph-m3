@@ -31,6 +31,21 @@ CONTRACT_QOS_LATCHED = QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELI
                                   durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
+def qos_for(topic):
+    """Recording QoS of a topic. Contract topics (/fleet/*) have reliable
+    publishers by contract and come in bursts (mock M1 emits RECEIVED,
+    PARSED, QUEUED for several tasks in one tick): a best-effort depth-5
+    subscriber measurably lost events (2026-10-29), so they are recorded
+    reliable with a deep queue, and so are their Module 2 echoes
+    (/mock_m2/*, which ws_probe publishes through rosbridge, reliable and
+    volatile). Everything else (sensors, the gz bridge) best effort."""
+    if topic in LATCHED_TOPICS or topic.endswith(LATCHED_SUFFIXES):
+        return CONTRACT_QOS_LATCHED
+    if topic.startswith(('/fleet/', '/mock_m2/')):
+        return CONTRACT_QOS
+    return qos_profile_sensor_data
+
+
 def hydrate(msg_class, data):
     """Build an rclpy message from a (possibly nested) dict: dicts become
     nested messages, lists of dicts message sequences, and a number of
@@ -95,17 +110,7 @@ class Recorder(Node):
         def store(msg):
             self.streams[topic].append((self.elapsed(), msg))
 
-        # Contract topics (/fleet/*) have reliable publishers by contract and
-        # come in bursts (mock M1 emits RECEIVED/PARSED/QUEUED for several
-        # tasks in one tick): a best-effort depth-5 subscriber measurably
-        # lost events (2026-10-29). Record them reliable with a deep queue.
-        if topic in LATCHED_TOPICS or topic.endswith(LATCHED_SUFFIXES):
-            qos = CONTRACT_QOS_LATCHED
-        elif topic.startswith('/fleet/'):
-            qos = CONTRACT_QOS
-        else:
-            qos = qos_profile_sensor_data
-        self.create_subscription(msg_class, topic, store, qos)
+        self.create_subscription(msg_class, topic, store, qos_for(topic))
 
     def make_publisher(self, spec, start):
         return _ScenarioPublisher(self, spec, start)
