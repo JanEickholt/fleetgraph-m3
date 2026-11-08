@@ -231,9 +231,9 @@ def samples(parsed_entity, step=0.1):
 SHIPPED = sorted(name[:-5] for name in os.listdir(SCENES) if name.endswith('.yaml'))
 
 
-def test_the_five_scenes_ship_and_declare_the_crate():
+def test_the_six_scenes_ship_and_declare_the_crate():
     assert SHIPPED == ['box_front', 'door_lab1_box_temporary', 'group_door_lab1',
-                       'person_hall', 'walker_hall']
+                       'group_hall_person_lab1', 'person_hall', 'walker_hall']
     for name in SHIPPED:
         parsed = shipped(name)
         assert parsed.name == name
