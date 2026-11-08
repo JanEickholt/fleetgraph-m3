@@ -427,3 +427,97 @@ def always_value(view, topic, field, equals, tol=0.01, source=None, **_):
             return (f"{where}: {field} = {value} at t={timestamp:.1f}s, "
                     f"expected always {equals} ±{tol}")
     return None
+
+
+# ------------------------------------------------------------ sim tools
+# Windows are inclusive [from_sec, to_sec] in the recording's timebase.
+
+def _in_window(stream, from_sec, to_sec):
+    return [(timestamp, msg) for timestamp, msg in stream
+            if float(from_sec) <= timestamp <= float(to_sec)]
+
+
+def _window_text(topic, from_sec, to_sec):
+    return f"{topic} in [{float(from_sec):g}, {float(to_sec):g}]"
+
+
+def _sector_ranges(scan, bearing_deg, half_width_deg):
+    """Ranges of the beams within half_width_deg of bearing_deg (wrapped)."""
+    sector = []
+    for index, distance in enumerate(scan.ranges):
+        angle = math.degrees(scan.angle_min + index * scan.angle_increment)
+        if abs((angle - bearing_deg + 180.0) % 360.0 - 180.0) <= half_width_deg:
+            sector.append(distance)
+    return sector
+
+
+@register
+def scan_range(view, topic, bearing_deg, min_m=0.0, max_m=math.inf, half_width_deg=2.0,
+               from_sec=0.0, to_sec=math.inf, **_):
+    """Every LaserScan in the window: the closest return within
+    half_width_deg of bearing_deg (scan frame) lies in [min_m, max_m].
+    REP 117 readings: -inf (too close) counts as 0, +inf as no return
+    (passes an open max_m only); NaN fails closed."""
+    window = _in_window(view.stream(topic), from_sec, to_sec)
+    if not window:
+        return f"no messages on {_window_text(topic, from_sec, to_sec)}"
+    sector = f"within +-{float(half_width_deg):g} deg of {float(bearing_deg):g} deg"
+    for timestamp, msg in window:
+        ranges = _sector_ranges(msg, float(bearing_deg), float(half_width_deg))
+        if not ranges:
+            return f"{topic} at t={timestamp:.1f}: no beam {sector}"
+        if any(math.isnan(distance) for distance in ranges):
+            return f"{topic} at t={timestamp:.1f}: NaN {sector}, treated as violation"
+        closest = min(0.0 if distance == -math.inf else distance for distance in ranges)
+        if not float(min_m) <= closest <= float(max_m):
+            seen = 'no return' if closest == math.inf else f"closest return {closest:.3f} m"
+            return (f"{topic} at t={timestamp:.1f}: {seen} {sector}, "
+                    f"outside [{float(min_m):g}, {float(max_m):g}] m")
+    return None
+
+
+def _entity_distances(msg, x, y, entity_id):
+    """Distances from (x, y) to the entities of a SceneObservation-like
+    message (in its own frame), only those with entity_id if given."""
+    return [_distance_xy(entity.position, x, y) for entity in msg.entities
+            if entity_id is None or entity.id == entity_id]
+
+
+def _entity_text(entity_id, x, y, tol):
+    name = 'entity' if entity_id is None else f"entity '{entity_id}'"
+    return f"{name} within {tol} of ({x}, {y})"
+
+
+@register
+def entity_near(view, topic, x, y, tol, min_fraction=1.0, entity_id=None,
+                from_sec=0.0, to_sec=math.inf, **_):
+    """At least min_fraction of the messages in the window carry an entity
+    within tol of (x, y)."""
+    window = _in_window(view.stream(topic), from_sec, to_sec)
+    where = _window_text(topic, from_sec, to_sec)
+    if not window:
+        return f"no messages on {where}"
+    closest_by_message = [min(_entity_distances(msg, x, y, entity_id), default=math.inf)
+                          for _, msg in window]
+    matched = sum(distance <= float(tol) for distance in closest_by_message)
+    if matched >= float(min_fraction) * len(window):
+        return None
+    return (f"{_entity_text(entity_id, x, y, tol)} in {matched}/{len(window)} messages "
+            f"({matched / len(window):.0%}) < required {float(min_fraction):.0%} on {where}; "
+            f"closest {min(closest_by_message):.2f}")
+
+
+@register
+def no_entity_near(view, topic, x, y, tol, entity_id=None, from_sec=0.0, to_sec=math.inf,
+                   **_):
+    """No message in the window carries an entity within tol of (x, y).
+    Absence needs evidence: a window without messages fails."""
+    window = _in_window(view.stream(topic), from_sec, to_sec)
+    if not window:
+        return f"no messages on {_window_text(topic, from_sec, to_sec)}"
+    for timestamp, msg in window:
+        distance = min(_entity_distances(msg, x, y, entity_id), default=math.inf)
+        if distance <= float(tol):
+            return (f"{_entity_text(entity_id, x, y, tol)} at t={timestamp:.1f} on {topic}, "
+                    f"distance {distance:.2f}")
+    return None
