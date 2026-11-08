@@ -1,0 +1,7 @@
+# Mock Module 1 for live operation: no scripted tasks. Plain-text tasks
+# arrive at runtime on /mock_m1/task_text (std_msgs/String, e.g. from the
+# Module 2 dashboard through rosbridge, m2_bridge.launch.py), get the ids
+# live-0001, live-0002, ... and go to the robot chosen by context-aware
+# allocation from the latest RobotState per robot.
+allocation: context
+tasks: []

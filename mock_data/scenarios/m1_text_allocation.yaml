@@ -1,0 +1,16 @@
+# Module 1 mock with plain-text tasks and context-aware allocation, for three
+# robots with robot_3 in maintenance. The mock parses each `text:`
+# (fleetgraph_robot/task_text.py) and, because the script names an
+# allocation policy, chooses each task's robot itself (allocation.py) from
+# the latest RobotState per robot. Straight-line distances from the docks
+# robot_1 (0, 0), robot_2 (2.8, -2.3), robot_3 (0, -1.5):
+#   lab_1 (6.0, 1.2):   robot_2 4.74 m, robot_1 6.12 m, robot_3 6.58 m
+#   storage (1.5, 1.5): robot_1 2.12 m, robot_3 3.35 m, robot_2 4.02 m
+#   hall (2.0, -1.5):   robot_2 1.13 m, robot_3 2.00 m, robot_1 2.50 m
+allocation: context
+tasks:
+  - {t: 2, task_id: txt-lab1, text: "Go to laboratory 1"}
+  - {t: 3, task_id: txt-delivery, text: "Bring the parcel from the storage to lab 2"}
+  # robot_1 and robot_2 are busy now and robot_3 is in maintenance: waits
+  - {t: 4, task_id: txt-hall, text: "Go to the hall"}
+  - {t: 5, task_id: txt-nonsense, text: "Make me a sandwich"}    # ERROR_PARSE

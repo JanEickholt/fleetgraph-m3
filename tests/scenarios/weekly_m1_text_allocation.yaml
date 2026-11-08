@@ -1,0 +1,50 @@
+name: weekly_m1_text_allocation
+# Module 1 link: plain-text tasks and context-aware allocation in the mock M1
+# (mock_data/scenarios/m1_text_allocation.yaml). Three robots, robot_3 in
+# maintenance. The mock parses each text and picks the robot from the
+# latest RobotState per robot: the nearest eligible one, straight line from
+# the localized pose to the first location. The margins (lab_1: robot_2
+# 4.74 m vs robot_1 6.12 m; storage: robot_1 2.12 m vs robot_3 3.35 m) are
+# far above the AMCL pose error (~0.1-0.3 m), so localization noise cannot
+# flip a choice. The mock starts at t=25 so all three robots are localized
+# when the first text arrives. Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py robots:=3
+  ready_timeout_sec: 240
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /ground_truth/robot_1/odom: nav_msgs/msg/Odometry
+  /ground_truth/robot_2/odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py robots:=3"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_1,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_2,
+                 args: "--ros-args -r __ns:=/robot_2 -p robot_id:=robot_2 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_3,
+                 args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3 -p use_sim_time:=true -p maintenance:=true"}}
+  - {t: 25, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/m1_text_allocation.yaml"}}
+window_sec: 180
+assert:
+  # precondition: robot_3 reports MAINTENANCE the whole time
+  - always_value: {topic: /fleet/robot_state, field: status, equals: 2, source: robot_3}
+  # "Go to laboratory 1": robot_2 is nearer than robot_1, both free
+  - task_state: {task_id: txt-lab1, state: EXECUTING, source: robot_2}
+  - task_state: {task_id: txt-lab1, state: COMPLETED, source: robot_2}
+  # delivery from storage: robot_1 is the nearest eligible robot
+  - task_state: {task_id: txt-delivery, state: EXECUTING, source: robot_1}
+  - task_state: {task_id: txt-delivery, state: COMPLETED, source: robot_1}
+  # "Go to the hall" arrives while robot_1 and robot_2 are busy and robot_3
+  # idles in maintenance. A robot refuses a second task (ROBOT_BUSY), so a
+  # COMPLETED here means the mock kept it QUEUED and retried until robot_1
+  # or robot_2 was free.
+  - task_sequence: {task_id: txt-hall, states: [QUEUED, ASSIGNED, EXECUTING, COMPLETED]}
+  # robot_3 is never assigned anything and never reports a task
+  - no_task_update: {robot_id: robot_3}
+  - task_sequence: {task_id: txt-nonsense, states: [RECEIVED, REJECTED]}
+  - task_state: {task_id: txt-nonsense, state: REJECTED, error_code: 100, source: m1_mock}
+  # ground truth: lab_1 (6.0, 1.2), lab_2 (6.5, -1.5)
+  - arrives_at: {topic: /ground_truth/robot_2/odom, x: 6.0, y: 1.2, tol: 0.35}
+  - arrives_at: {topic: /ground_truth/robot_1/odom, x: 6.5, y: -1.5, tol: 0.35}
