@@ -25,6 +25,7 @@ ACTION_KINDS = ('run', 'launch', 'publish')
 MOCK_DATA = os.environ.get('FLEETGRAPH_MOCK_DATA', '/home/ubuntu/mock_data')
 DEFAULT_SIM_READY_TIMEOUT_SEC = 240
 DEFAULT_CLOCK_STALL_SEC = 30
+SIM_TAG = 'sim'
 
 
 class ScenarioError(Exception):
@@ -34,6 +35,17 @@ class ScenarioError(Exception):
 def _assertion_kind(assertion):
     """The single assertion type named in one `assert` entry."""
     return next(key for key in assertion if key in assertions.REGISTRY)
+
+
+def _process_tag(action):
+    """Tag of a run/launch action's process (/tmp/harness_<tag>.log,
+    evidence log_<tag>); None for publish actions."""
+    if 'run' in action:
+        return action['run'].get('tag', action['run'].get('exec'))
+    if 'launch' in action:
+        launch_file = action['launch'].split()[1]      # "<package> <file>.launch.py ..."
+        return 'launch_' + launch_file.split('.')[0]
+    return None
 
 
 def validate(scenario, origin='scenario'):
@@ -55,6 +67,13 @@ def validate(scenario, origin='scenario'):
             raise ScenarioError(
                 f"{origin}: each action needs 't' plus exactly one of "
                 f"{list(ACTION_KINDS)}, got: {action}")
+    tags = [SIM_TAG] if scenario.get('sim') else []
+    tags += [tag for tag in map(_process_tag, scenario['actions']) if tag is not None]
+    for tag in tags:
+        if tags.count(tag) > 1:
+            raise ScenarioError(
+                f"{origin}: process tag '{tag}' used twice (one log per tag); "
+                f"give each run action a distinct 'tag'")
     return scenario
 
 
@@ -121,17 +140,18 @@ def _task_history(task_updates):
     return history
 
 
-def _evidence(recorder, processes):
+def _evidence(recorder, processes, wall_sec):
     elapsed = recorder.elapsed()
-    evidence = {'window_elapsed_sec': round(elapsed, 1)}
+    evidence = {'window_elapsed_sec': round(elapsed, 1), 'window_wall_sec': round(wall_sec, 1)}
+    if recorder.clock_sec is not None:
+        evidence['real_time_factor'] = round(elapsed / max(wall_sec, 1e-9), 2)
     for topic, stream in recorder.streams.items():
         evidence[topic] = {'count': len(stream),
                            'per_sec': round(len(stream) / max(elapsed, 1e-9), 1)}
-    for topic in ('/odom', '/ground_truth/odom'):
-        if recorder.streams.get(topic):
-            position = recorder.streams[topic][-1][1].pose.pose.position
-            key = f'last{topic.replace("/", "_")}'
-            evidence[key] = [round(position.x, 2), round(position.y, 2)]
+        if topic.endswith('/odom') and stream:
+            position = stream[-1][1].pose.pose.position
+            evidence[f'last{topic.replace("/", "_")}'] = [round(position.x, 2),
+                                                          round(position.y, 2)]
     if recorder.streams.get('/fleet/task_update'):
         evidence['task_history'] = _task_history(recorder.streams['/fleet/task_update'])
     for process in processes:
@@ -149,11 +169,9 @@ def _start_action(action):
         args = str(run_spec.get('args', '')).replace('{mock_data}', MOCK_DATA)
         return ManagedProcess(
             f"ros2 run {run_spec['pkg']} {run_spec['exec']} {args}",
-            tag=run_spec.get('tag', run_spec['exec']))
+            tag=_process_tag(action))
     if 'launch' in action:
-        launch_spec = action['launch']                 # "<package> <file>.launch.py ..."
-        launch_name = launch_spec.split()[1].split('.')[0]
-        return ManagedProcess(f"ros2 launch {launch_spec}", tag='launch_' + launch_name)
+        return ManagedProcess(f"ros2 launch {action['launch']}", tag=_process_tag(action))
     return None
 
 
@@ -183,7 +201,7 @@ def run(path):
         sim = scenario.get('sim')
         if sim:
             processes.append(ManagedProcess(f"ros2 launch {sim['launch']}",
-                                            env=sim.get('env'), tag='sim'))
+                                            env=sim.get('env'), tag=SIM_TAG))
             _wait_for_clock(recorder, sim)
 
         recorder.start_window()
@@ -219,6 +237,7 @@ def run(path):
                 publisher.tick(now)
             if now >= window_sec:
                 break
+        wall_sec = recorder.wall_elapsed()
 
         view = View(recorder)
         for assertion in scenario['assert']:
@@ -228,7 +247,7 @@ def run(path):
                 result['failures'].append(f"{kind}: {failure}")
 
         result['passed'] = not result['failures']
-        result['evidence'] = _evidence(recorder, processes)
+        result['evidence'] = _evidence(recorder, processes, wall_sec)
     finally:
         for process in processes:
             process.stop()

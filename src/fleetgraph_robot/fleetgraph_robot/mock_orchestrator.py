@@ -1,13 +1,15 @@
 """Mock Module 1 (orchestrator) for independent M3 testing: replays a YAML
-task script against one robot through the real contract topics.
+task script against one or more robots through the real contract topics.
 
   ros2 run fleetgraph_robot mock_orchestrator --ros-args \
       -p scenario_file:=/home/ubuntu/mock_data/scenarios/week4_demo.yaml -p use_sim_time:=true
 
 Per task it publishes the M1-side lifecycle (RECEIVED, PARSED, QUEUED,
-ASSIGNED) on /fleet/task_update, then a TaskAssignment; it re-sends the
-assignment until the robot answers (ack timeout), queues by priority and
-assigns the next task once the robot reports a terminal state. Scripted
+ASSIGNED) on /fleet/task_update, then a TaskAssignment to the task's robot
+(task robot_id, default the script's robot_id, else robot_1). Per robot it
+re-sends the assignment until that robot answers (ack timeout), queues by
+priority and assigns the next task once the robot reports a terminal
+state; robots work in parallel. Scripted
 TaskCommands (cancel) are sent at their time. All TaskUpdates are written
 to an optional JSONL event log; a metrics summary is logged at the end.
 Times in the script are sim seconds after the first /clock tick.
@@ -62,7 +64,7 @@ class MockOrchestrator(Node):
         self.params = {parameter.name: parameter.value for parameter in declared}
         with open(self.params['scenario_file']) as file:
             scenario = yaml.safe_load(file)
-        self.robot_id = scenario.get('robot_id', 'robot_1')
+        self.default_robot_id = scenario.get('robot_id', 'robot_1')
         self.script = sorted(scenario.get('tasks', []), key=_by_script_time)
         commands = scenario.get('commands', [])
         self.commands = sorted([command for command in commands if 't' in command],
@@ -83,14 +85,15 @@ class MockOrchestrator(Node):
         self.event_log = open(log_file, 'a') if log_file else None
 
         self.start_time = None     # sim seconds of the first /clock tick
-        self.queue = []            # TaskRequest waiting for the robot
-        self.tasks = {}            # task_id -> {received, assigned, done, state, ...}
-        self.in_flight = None      # InFlightAssignment or None
+        self.queues = {}           # robot_id -> TaskRequests waiting for that robot
+        self.tasks = {}            # task_id -> {robot_id, received, assigned, state, ...}
+        self.in_flight = {}        # robot_id -> InFlightAssignment
         self.finished = False
         self.create_timer(0.1, self._tick)
+        robots = sorted({entry.get('robot_id', self.default_robot_id) for entry in self.script})
         self.get_logger().info(
             f'mock M1: {len(self.script)} tasks, {len(self.commands)} commands '
-            f'for {self.robot_id}')
+            f'for {", ".join(robots)}')
 
     def now_sec(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -107,18 +110,19 @@ class MockOrchestrator(Node):
             self._receive(self.script.pop(0))
         while self.commands and self.commands[0]['t'] <= script_time:
             self._send_command(self.commands.pop(0))
-        if self.in_flight:
-            self._check_ack_timeout(now)
-        if not self.in_flight and self.queue:
-            self._assign(self.queue.pop(0))
+        for robot_id, queue in self.queues.items():
+            if robot_id in self.in_flight:
+                self._check_ack_timeout(robot_id, now)
+            if robot_id not in self.in_flight and queue:
+                self._assign(robot_id, queue.pop(0))
         if not self.finished and self._all_tasks_done():
             self.finished = True
             self._summary()
             if self.params['exit_when_done']:
                 raise SystemExit(0)
 
-    def _check_ack_timeout(self, now):
-        in_flight = self.in_flight
+    def _check_ack_timeout(self, robot_id, now):
+        in_flight = self.in_flight[robot_id]
         if in_flight.acked or now - in_flight.sent_at <= self.params['ack_timeout_sec']:
             return
         task = in_flight.msg.task
@@ -126,7 +130,7 @@ class MockOrchestrator(Node):
             self._lifecycle(task, TaskUpdate.STATE_FAILED,
                             error_code=TaskUpdate.ERROR_ROBOT_LOST,
                             reason='no answer from robot')
-            self.in_flight = None
+            del self.in_flight[robot_id]
             return
         self.get_logger().warn(f're-sending {task.task_id}')
         self.pub_assignment.publish(
@@ -135,7 +139,7 @@ class MockOrchestrator(Node):
         in_flight.resends += 1
 
     def _all_tasks_done(self):
-        return (not self.script and not self.queue and not self.in_flight and
+        return (not self.script and not any(self.queues.values()) and not self.in_flight and
                 self.tasks and
                 all(record['state'] in TERMINAL_STATES for record in self.tasks.values()))
 
@@ -150,30 +154,34 @@ class MockOrchestrator(Node):
         # ids only: the robot resolves them from its location registry
         task.locations = [Location(id=location_id)
                           for location_id in task_entry.get('locations', [])]
-        self.tasks[task.task_id] = {'received': self.now_sec(), 'state': None,
-                                    'priority': task.priority, 'rev': 0}
+        robot_id = task_entry.get('robot_id', self.default_robot_id)
+        self.tasks[task.task_id] = {'robot_id': robot_id, 'received': self.now_sec(),
+                                    'state': None, 'priority': task.priority, 'rev': 0}
         for state in (TaskUpdate.STATE_RECEIVED, TaskUpdate.STATE_PARSED,
                       TaskUpdate.STATE_QUEUED):
             self._lifecycle(task, state)
-        self.queue.append(task)
-        self.queue.sort(key=lambda request: -request.priority)  # stable: FIFO per priority
+        queue = self.queues.setdefault(robot_id, [])
+        queue.append(task)
+        queue.sort(key=lambda request: -request.priority)  # stable: FIFO per priority
 
-    def _assign(self, task):
+    def _assign(self, robot_id, task):
         record = self.tasks[task.task_id]
         record['rev'] += 1
         record['assigned'] = self.now_sec()
-        msg = TaskAssignment(robot_id=self.robot_id, assignment_rev=record['rev'], task=task)
-        self._lifecycle(task, TaskUpdate.STATE_ASSIGNED, robot_id=self.robot_id)
+        msg = TaskAssignment(robot_id=robot_id, assignment_rev=record['rev'], task=task)
+        self._lifecycle(task, TaskUpdate.STATE_ASSIGNED, robot_id=robot_id)
         self.pub_assignment.publish(self.meta.stamp(msg, contract.TOPIC_TASK_ASSIGNMENT))
-        self.in_flight = InFlightAssignment(msg, sent_at=self.now_sec())
-        self.get_logger().info(f'assigned {task.task_id} -> {self.robot_id}')
+        self.in_flight[robot_id] = InFlightAssignment(msg, sent_at=self.now_sec())
+        self.get_logger().info(f'assigned {task.task_id} -> {robot_id}')
 
     def _send_command(self, command_entry):
-        msg = TaskCommand(robot_id=self.robot_id, task_id=command_entry['task_id'],
+        task_id = command_entry['task_id']
+        robot_id = self.tasks.get(task_id, {}).get('robot_id', self.default_robot_id)
+        msg = TaskCommand(robot_id=robot_id, task_id=task_id,
                           command=TaskCommand.COMMAND_CANCEL,
                           reason=command_entry.get('reason', 'operator cancel'))
         self.pub_command.publish(self.meta.stamp(msg, contract.TOPIC_TASK_COMMAND))
-        self.get_logger().info(f'cancel {command_entry["task_id"]}')
+        self.get_logger().info(f'cancel {task_id} on {robot_id}')
 
     def _lifecycle(self, task, state, robot_id='', error_code=0, reason=''):
         record = self.tasks[task.task_id]
@@ -189,13 +197,15 @@ class MockOrchestrator(Node):
         if record is None:
             return
         record['state'] = msg.state
-        if msg.meta.source_id != self.robot_id:
+        robot_id = record['robot_id']
+        if msg.meta.source_id != robot_id:
             return
         self._arm_relative_command(msg)
-        if self.in_flight and self.in_flight.msg.task.task_id == msg.task_id:
-            self.in_flight.acked = True                      # robot answered
+        in_flight = self.in_flight.get(robot_id)
+        if in_flight and in_flight.msg.task.task_id == msg.task_id:
+            in_flight.acked = True                           # robot answered
             if msg.state in TERMINAL_STATES:
-                self.in_flight = None
+                del self.in_flight[robot_id]
         if msg.state in TERMINAL_STATES:
             record['done'] = self.now_sec()
             record['error_code'] = msg.error_code

@@ -1,0 +1,47 @@
+name: weekly_fleet_three_robots
+# Multi-robot foundation: three robots in one Gazebo world, each with its own
+# namespaced sensors, Nav2 stack and agent (/robot_N/...), driven at the same
+# time by one mock M1 over the shared /fleet/* contract topics. Targets are
+# distinct and the paths do not cross: robots cannot see each other (their
+# bodies sit below the 0.19 m scan plane). Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py robots:=3
+  ready_timeout_sec: 240
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /ground_truth/robot_1/odom: nav_msgs/msg/Odometry
+  /ground_truth/robot_2/odom: nav_msgs/msg/Odometry
+  /ground_truth/robot_3/odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py robots:=3"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_1,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_2,
+                 args: "--ros-args -r __ns:=/robot_2 -p robot_id:=robot_2 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_3,
+                 args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3 -p use_sim_time:=true"}}
+  - {t: 20, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/fleet_three_robots.yaml"}}
+window_sec: 180
+assert:
+  # concurrent: the mock assigns all three at ~t=23 and each starts at once;
+  # one robot after another, the third could start only after two drives
+  # (shortest pair: hall 6 s + lab_2 12 s), i.e. not before t=40
+  - task_state: {task_id: task-r1-lab1, state: EXECUTING, source: robot_1, within_sec: 30}
+  - task_state: {task_id: task-r2-lab2, state: EXECUTING, source: robot_2, within_sec: 30}
+  - task_state: {task_id: task-r3-hall, state: EXECUTING, source: robot_3, within_sec: 30}
+  - task_state: {task_id: task-r1-lab1, state: COMPLETED, source: robot_1}
+  - task_state: {task_id: task-r2-lab2, state: COMPLETED, source: robot_2}
+  - task_state: {task_id: task-r3-hall, state: COMPLETED, source: robot_3}
+  # ground truth: lab_1 (6.0, 1.2), lab_2 (6.5, -1.5), hall (2.0, -1.5)
+  - arrives_at: {topic: /ground_truth/robot_1/odom, x: 6.0, y: 1.2, tol: 0.35}
+  - arrives_at: {topic: /ground_truth/robot_2/odom, x: 6.5, y: -1.5, tol: 0.35}
+  - arrives_at: {topic: /ground_truth/robot_3/odom, x: 2.0, y: -1.5, tol: 0.35}
+  # each agent localizes from its own robot's TF
+  - arrives_at: {topic: /fleet/robot_state, source: robot_1, x: 6.0, y: 1.2, tol: 0.3}
+  - arrives_at: {topic: /fleet/robot_state, source: robot_2, x: 6.5, y: -1.5, tol: 0.3}
+  - arrives_at: {topic: /fleet/robot_state, source: robot_3, x: 2.0, y: -1.5, tol: 0.3}
+  - min_rate: {topic: /fleet/robot_state, hz: 2.0, source: robot_1}
+  - min_rate: {topic: /fleet/robot_state, hz: 2.0, source: robot_2}
+  - min_rate: {topic: /fleet/robot_state, hz: 2.0, source: robot_3}

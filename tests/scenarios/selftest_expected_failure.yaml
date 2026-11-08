@@ -6,7 +6,8 @@ topics:
   /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
   /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
 actions:
-  - {t: 0, run: {pkg: fleetgraph_robot, exec: agent}}
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: agent,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1"}}
 window_sec: 6
 assert:
   - task_state: {task_id: never-sent, state: COMPLETED}

@@ -10,11 +10,12 @@ sim:
 topics:
   /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
   /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
-  /ground_truth/odom: nav_msgs/msg/Odometry
-  /odom: nav_msgs/msg/Odometry
+  /ground_truth/robot_1/odom: nav_msgs/msg/Odometry
+  /robot_1/odom: nav_msgs/msg/Odometry
 actions:
   - {t: 0, launch: "fleetgraph_sim nav.launch.py"}
-  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, args: "--ros-args -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
   - {t: 15, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
                   args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/go_to_lab1.yaml"}}
 window_sec: 180
@@ -22,6 +23,6 @@ assert:
   - task_sequence: {task_id: task-lab1, states: [RECEIVED, ASSIGNED, EXECUTING, COMPLETED]}
   - task_state: {task_id: task-lab1, state: COMPLETED, source: robot_1}
   # lab_1 = (6.0, 1.2); Nav2 goal checker xy tolerance 0.25 + AMCL error
-  - arrives_at: {topic: /ground_truth/odom, x: 6.0, y: 1.2, tol: 0.35}
+  - arrives_at: {topic: /ground_truth/robot_1/odom, x: 6.0, y: 1.2, tol: 0.35}
   - arrives_at: {topic: /fleet/robot_state, x: 6.0, y: 1.2, tol: 0.3}
   - min_rate: {topic: /fleet/robot_state, hz: 2.0}

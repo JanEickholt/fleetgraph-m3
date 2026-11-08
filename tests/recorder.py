@@ -96,6 +96,10 @@ class Recorder(Node):
         self._window_start_wall = time.time()
         self._window_start_clock = self.clock_sec
 
+    def wall_elapsed(self):
+        """Wall seconds since start_window (elapsed / wall = real-time factor)."""
+        return time.time() - self._window_start_wall
+
     def elapsed(self):
         if self.clock_sec is not None:
             start = (self._window_start_clock if self._window_start_clock is not None

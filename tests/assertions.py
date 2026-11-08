@@ -52,36 +52,50 @@ def publishes(view, topic, **_):
     return None
 
 
+def _from_source(stream, source):
+    """Contract messages whose Meta.source_id is `source` (all if None):
+    one robot's share of a fleet-wide topic such as /fleet/robot_state."""
+    if source is None:
+        return stream
+    return [(timestamp, msg) for timestamp, msg in stream if msg.meta.source_id == source]
+
+
+def _where(topic, source):
+    return topic if source is None else f"{topic} from {source}"
+
+
 @register
-def min_rate(view, topic, hz, margin=None, **_):
-    stream = view.stream(topic)
+def min_rate(view, topic, hz, margin=None, source=None, **_):
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
     if not stream:
-        return f"no messages on {topic}"
+        return f"no messages on {where}"
     if len(stream) < 2:
-        return (f"only 1 message on {topic}, "
+        return (f"only 1 message on {where}, "
                 f"cannot estimate rate")
     span = stream[-1][0] - stream[0][0]
     if span <= 0:
-        return f"messages on {topic} span {span}s, cannot estimate rate"
+        return f"messages on {where} span {span}s, cannot estimate rate"
     actual = (len(stream) - 1) / span
     margin_fraction = DEFAULT_RATE_MARGIN if margin is None else float(margin)
     required = float(hz) * (1.0 - margin_fraction)
     if actual < required:
         return (f"rate {actual:.2f} Hz < required {required:.2f} Hz "
-                f"(nominal {hz} - {margin_fraction:.0%} margin) on {topic}")
+                f"(nominal {hz} - {margin_fraction:.0%} margin) on {where}")
     return None
 
 
 @register
-def arrives_at(view, topic, x, y, tol, **_):
-    stream = view.stream(topic)
+def arrives_at(view, topic, x, y, tol, source=None, **_):
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
     for _, msg in stream:
         if _distance_xy(_get_field(msg, 'pose.pose.position'), x, y) <= float(tol):
             return None
     if not stream:
-        return f"no messages on {topic}"
+        return f"no messages on {where}"
     last = _get_field(stream[-1][1], 'pose.pose.position')
-    return (f"never came within {tol} of ({x}, {y}); "
+    return (f"never came within {tol} of ({x}, {y}) on {where}; "
             f"last pose ({float(_get_field(last, 'x')):.2f}, "
             f"{float(_get_field(last, 'y')):.2f}), "
             f"distance {_distance_xy(last, x, y):.2f}")
@@ -152,9 +166,8 @@ _STATE_NAMES = {value: name for name, value in TASK_STATES.items()}
 
 
 def _task_events(view, topic, task_id, source=None):
-    return [(timestamp, msg) for timestamp, msg in view.stream(topic)
-            if msg.task_id == task_id and
-            (source is None or msg.meta.source_id == source)]
+    return [(timestamp, msg) for timestamp, msg in _from_source(view.stream(topic), source)
+            if msg.task_id == task_id]
 
 
 def _history(events):

@@ -71,6 +71,45 @@ def test_arrives_at_pass_and_fail():
     assert failure and 'no messages' in failure
 
 
+def from_source(source, msg=None):
+    # contract messages name their publisher in meta.source_id
+    msg = msg or SimpleNamespace()
+    msg.meta = SimpleNamespace(source_id=source)
+    return msg
+
+
+def test_min_rate_per_source():
+    # robot_1 at 2 Hz and robot_2 at 0.5 Hz share /fleet/robot_state: the
+    # merged topic passes 2 Hz, only the per-source rate exposes robot_2
+    stream = sorted([(index * 0.5, from_source('robot_1')) for index in range(20)] +
+                    [(index * 2.0 + 0.25, from_source('robot_2')) for index in range(5)],
+                    key=lambda entry: entry[0])
+    recording = FakeRecording({'/fleet/robot_state': stream}, 10.0)
+    assert assertions.min_rate(recording, topic='/fleet/robot_state', hz=2.0) is None
+    assert assertions.min_rate(recording, topic='/fleet/robot_state', hz=2.0,
+                               source='robot_1') is None
+    failure = assertions.min_rate(recording, topic='/fleet/robot_state', hz=2.0,
+                                  source='robot_2')
+    assert failure and '0.50 Hz' in failure and 'from robot_2' in failure
+    failure = assertions.min_rate(recording, topic='/fleet/robot_state', hz=2.0,
+                                  source='robot_3')
+    assert failure and 'no messages on /fleet/robot_state from robot_3' in failure
+
+
+def test_arrives_at_per_source():
+    recording = FakeRecording({'/fleet/robot_state': [
+        (1.0, from_source('robot_1', pose_msg(2.0, 1.0))),
+        (1.0, from_source('robot_2', pose_msg(5.0, 5.0)))]}, 10.0)
+    assert assertions.arrives_at(recording, topic='/fleet/robot_state', x=2.0, y=1.0,
+                                 tol=0.2, source='robot_1') is None
+    failure = assertions.arrives_at(recording, topic='/fleet/robot_state', x=2.0, y=1.0,
+                                    tol=0.2, source='robot_2')
+    assert failure and 'from robot_2' in failure and 'last pose (5.00, 5.00)' in failure
+    failure = assertions.arrives_at(recording, topic='/fleet/robot_state', x=2.0, y=1.0,
+                                    tol=0.2, source='robot_3')
+    assert failure and 'no messages on /fleet/robot_state from robot_3' in failure
+
+
 def test_never_below_scalar_and_array():
     safe = FakeRecording({'/scan': [(1.0, scan_msg([1.0, 0.3]))]}, 10.0)
     assert assertions.never_below(safe, topic='/scan', field='ranges', threshold=0.25) is None

@@ -2,9 +2,12 @@
 runs the TaskMachine, executes legs through Nav2 NavigateToPose, publishes
 TaskUpdate, RobotState (heartbeat) and RobotConnection.
 
-  ros2 run fleetgraph_robot agent --ros-args -p robot_id:=robot_1 -p use_sim_time:=true
+  ros2 run fleetgraph_robot agent --ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 \
+      -p use_sim_time:=true
 
-Pose comes from TF map -> base_footprint (AMCL), never from Gazebo ground
+Robot-side names are relative (odom, amcl_pose, navigate_to_pose, TF), so
+the namespace /robot_N selects the robot; contract topics are global
+/fleet/*. Pose comes from TF map -> base_footprint (AMCL), never from Gazebo ground
 truth. Battery is a simple model (battery.py) until a real battery
 source exists.
 """
@@ -35,7 +38,10 @@ NAV_SERVER_POLL_SEC = 0.5
 
 class Agent(Node):
     def __init__(self):
-        super().__init__('fleetgraph_agent')
+        # tf2_ros listens on absolute /tf and /tf_static: remap them into the
+        # robot namespace, as nav2_bringup does for Nav2
+        super().__init__('fleetgraph_agent', cli_args=[
+            '--ros-args', '-r', '/tf:=tf', '-r', '/tf_static:=tf_static'])
         default_locations = get_package_share_directory('fleetgraph_sim') + \
             '/config/locations.yaml'
         declared = self.declare_parameters('', [
@@ -75,8 +81,8 @@ class Agent(Node):
                                  self._on_assignment, contract.QOS_COMMANDS)
         self.create_subscription(TaskCommand, contract.TOPIC_TASK_COMMAND,
                                  self._on_command, contract.QOS_COMMANDS)
-        self.create_subscription(Odometry, '/odom', self._on_odom, 10)
-        self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose',
+        self.create_subscription(Odometry, 'odom', self._on_odom, 10)
+        self.create_subscription(PoseWithCovarianceStamped, 'amcl_pose',
                                  self._on_amcl_pose, 10)
 
         self.tf_buffer = Buffer()
@@ -231,7 +237,7 @@ class Agent(Node):
 
     # ---------------------------------------------------------- telemetry
     def _status(self):
-        # live parameter: `ros2 param set /fleetgraph_agent maintenance true`
+        # live parameter: `ros2 param set /robot_1/fleetgraph_agent maintenance true`
         if self.get_parameter('maintenance').value:
             return RobotState.STATUS_MAINTENANCE
         if self.machine.active_task_id:

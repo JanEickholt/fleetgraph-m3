@@ -9,10 +9,11 @@ sim:
 topics:
   /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
   /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
-  /ground_truth/odom: nav_msgs/msg/Odometry
+  /ground_truth/robot_1/odom: nav_msgs/msg/Odometry
 actions:
   - {t: 0, launch: "fleetgraph_sim nav.launch.py"}
-  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, args: "--ros-args -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
   - {t: 15, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
                   args: "--ros-args -p use_sim_time:=true -p log_file:=/tmp/week4_events.jsonl -p scenario_file:={mock_data}/scenarios/week4_demo.yaml"}}
 window_sec: 480

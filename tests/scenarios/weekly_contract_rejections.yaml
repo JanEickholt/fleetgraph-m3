@@ -7,7 +7,8 @@ topics:
   /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
   /fleet/robot_connection: fleetgraph_interfaces/msg/RobotConnection
 actions:
-  - {t: 0, run: {pkg: fleetgraph_robot, exec: agent}}
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: agent,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1"}}
   - {t: 3, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
                  args: "--ros-args -p scenario_file:={mock_data}/scenarios/rejections.yaml"}}
 window_sec: 15

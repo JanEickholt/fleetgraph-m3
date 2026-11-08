@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Debug aid: print the closest lidar returns (range, bearing) of one /scan.
+"""Debug aid: print the closest lidar returns (range, bearing) of one scan.
 
-  tools/ros python3 /home/ubuntu/tools/scan_min.py
+  tools/ros python3 /home/ubuntu/tools/scan_min.py [robot_N]    # default robot_1
 """
 import math
+import sys
 
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
@@ -13,8 +14,10 @@ from sensor_msgs.msg import LaserScan
 def main():
     rclpy.init()
     node = rclpy.create_node('scan_min')
+    robot = sys.argv[1] if len(sys.argv) > 1 else 'robot_1'
     received = []
-    node.create_subscription(LaserScan, '/scan', received.append, qos_profile_sensor_data)
+    node.create_subscription(LaserScan, f'/{robot}/scan', received.append,
+                             qos_profile_sensor_data)
     while not received:
         rclpy.spin_once(node, timeout_sec=1.0)
     scan = received[0]

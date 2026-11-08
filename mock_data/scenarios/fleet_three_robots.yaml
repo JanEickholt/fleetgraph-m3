@@ -1,0 +1,11 @@
+# Multi-robot baseline: one go_to per robot at the same time, to distinct
+# targets on paths that do not cross. A task's robot_id defaults to the
+# script-level robot_id (itself default robot_1).
+robot_id: robot_1
+tasks:
+  - {t: 2, task_id: task-r1-lab1, type: go_to, raw_text: "Go to laboratory 1",
+     locations: [lab_1]}
+  - {t: 2, task_id: task-r2-lab2, robot_id: robot_2, type: go_to,
+     raw_text: "Go to laboratory 2", locations: [lab_2]}
+  - {t: 2, task_id: task-r3-hall, robot_id: robot_3, type: go_to,
+     raw_text: "Go to the hall", locations: [hall]}

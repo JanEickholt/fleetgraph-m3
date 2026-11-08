@@ -59,3 +59,17 @@ def test_action_without_t():
     scenario['actions'] = [{'run': {'pkg': 'a', 'exec': 'b'}}]
     with pytest.raises(ScenarioError, match="'t'"):
         validate(scenario)
+
+
+def test_duplicate_process_tags():
+    # one tag = one /tmp/harness_<tag>.log: two agents would clobber it
+    agent = {'pkg': 'fleetgraph_robot', 'exec': 'agent'}
+    scenario = dict(GOOD, actions=[{'t': 1, 'run': dict(agent)}, {'t': 1, 'run': dict(agent)}])
+    with pytest.raises(ScenarioError, match="tag 'agent'"):
+        validate(scenario)
+    scenario['actions'][1]['run']['tag'] = 'agent_robot_2'
+    assert validate(scenario) is not None
+    scenario = dict(GOOD, sim={'launch': 'fleetgraph_sim sim.launch.py'},
+                    actions=[{'t': 0, 'run': dict(agent, tag='sim')}])
+    with pytest.raises(ScenarioError, match="tag 'sim'"):
+        validate(scenario)

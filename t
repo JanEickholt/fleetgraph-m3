@@ -45,13 +45,13 @@ fi
 cleanup_ros() {
   exec_ros '
     # every pattern has a [x] bracket so it never matches this shell itself
-    patterns="[g]z sim|[r]os2 launch|[r]os2 run|[p]arameter_bridge|/opt/ros/jazzy/lib/[n]av2_|[c]omponent_container|[f]leetgraph_robot/lib|/opt/ros/jazzy/lib/[r]obot_state_publisher"
+    patterns="[g]z sim|[r]os2 launch|[r]os2 run|[p]arameter_bridge|/opt/ros/jazzy/lib/[n]av2_|[c]omponent_container|[f]leetgraph_robot/lib|/opt/ros/jazzy/lib/[r]obot_state_publisher|/opt/ros/jazzy/lib/[r]os_gz_sim"
     IFS="|"; for pattern in $patterns; do pkill -f "$pattern" 2>/dev/null; done
     sleep 2
     for pattern in $patterns; do pkill -9 -f "$pattern" 2>/dev/null; done
     unset IFS
     for attempt in $(seq 1 30); do
-      leftover=$(pgrep -fc "[g]z sim|[p]arameter_bridge|[c]omponent_container|/opt/ros/jazzy/lib/[n]av2_|[f]leetgraph_robot/lib" || true)
+      leftover=$(pgrep -fc "$patterns" || true)
       [ "$leftover" = "0" ] && break
       sleep 2
     done

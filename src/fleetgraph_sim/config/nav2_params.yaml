@@ -11,9 +11,13 @@
 #  - collision_monitor scan min_height 0.05 (the default 0.15 sits just
 #    below our 0.19 m scan plane — kept low so a lower mount stays covered)
 #  - velocity limits match the gz DiffDrive (1.0 m/s^2, 2.0 rad/s^2)
+#  - one stack per robot in namespace /robot_N (nav.launch.py): topics are
+#    relative; costmap layers live one namespace deeper, so their scan topic
+#    is <robot_namespace>/scan (nav2_bringup substitutes /robot_N)
 amcl:
   ros__parameters:
-    # FleetGraph: robot spawns at the dock = map origin
+    # FleetGraph: robot spawns at its dock; nav.launch.py overrides this
+    # pose per robot from config/locations.yaml
     set_initial_pose: true
     initial_pose: {x: 0.0, y: 0.0, z: 0.0, yaw: 0.0}
     alpha1: 0.2
@@ -58,7 +62,7 @@ bt_navigator:
   ros__parameters:
     global_frame: map
     robot_base_frame: base_link
-    odom_topic: /odom
+    odom_topic: odom           # FleetGraph: relative, per robot namespace
     bt_loop_duration: 10
     default_server_timeout: 20
     wait_for_service_timeout: 1000
@@ -159,7 +163,7 @@ local_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: <robot_namespace>/scan    # FleetGraph: see header
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -189,7 +193,7 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: <robot_namespace>/scan    # FleetGraph: see header
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -335,7 +339,7 @@ collision_monitor:
     FootprintApproach:
       type: "polygon"
       action_type: "approach"
-      footprint_topic: "/local_costmap/published_footprint"
+      footprint_topic: "local_costmap/published_footprint"   # FleetGraph: relative
       time_before_collision: 1.2
       simulation_time_step: 0.1
       min_points: 6

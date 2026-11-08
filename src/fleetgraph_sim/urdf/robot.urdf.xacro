@@ -4,8 +4,11 @@
   <!-- Based on the course tutorial robot (my_robot). Changes for FleetGraph:
        DiffDrive publishes odom->base_footprint TF for Nav2, uses the
        measured effective wheel separation (sim-only correction), ground
-       truth odometry for tests, camera throttled for software rendering. -->
+       truth odometry for tests, camera throttled for software rendering and
+       off by default. Every gz topic is absolute under /<robot_name> (ground
+       truth: /ground_truth/<robot_name>/odom), so robots never share one. -->
   <xacro:arg name="robot_name" default="robot_1"/>
+  <xacro:arg name="camera" default="false"/>
 
   <!-- Properties: defined once, used everywhere as ${...}. -->
   <xacro:property name="body_l" value="0.4"/>
@@ -181,9 +184,9 @@
       <wheel_radius>${wheel_r}</wheel_radius>
       <max_linear_acceleration>1.0</max_linear_acceleration>
       <max_angular_acceleration>2.0</max_angular_acceleration>
-      <topic>/cmd_vel</topic>
-      <odom_topic>/odom</odom_topic>
-      <tf_topic>/tf</tf_topic>
+      <topic>/$(arg robot_name)/cmd_vel</topic>
+      <odom_topic>/$(arg robot_name)/odom</odom_topic>
+      <tf_topic>/$(arg robot_name)/tf</tf_topic>
       <odom_publish_frequency>30</odom_publish_frequency>
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
@@ -194,25 +197,30 @@
             name="gz::sim::systems::OdometryPublisher">
       <odom_frame>world</odom_frame>
       <robot_base_frame>$(arg robot_name)</robot_base_frame>
-      <odom_topic>/ground_truth/odom</odom_topic>
+      <odom_topic>/ground_truth/$(arg robot_name)/odom</odom_topic>
       <odom_publish_frequency>10</odom_publish_frequency>
       <dimensions>2</dimensions>
     </plugin>
-    <!-- JointStatePublisher: publishes wheel joint angles (for TF/RViz). -->
+    <!-- JointStatePublisher: publishes wheel joint angles (for TF/RViz).
+         FleetGraph: 30 Hz; the default (every 1 ms physics step, ~1 kHz per
+         robot through the bridge) costs CPU for nothing, robot_state_publisher
+         sends the wheel TF at 20 Hz anyway. -->
     <plugin filename="gz-sim-joint-state-publisher-system"
             name="gz::sim::systems::JointStatePublisher">
+      <topic>/$(arg robot_name)/joint_states</topic>
+      <update_rate>30</update_rate>
       <joint_name>left_wheel_joint</joint_name>
       <joint_name>right_wheel_joint</joint_name>
     </plugin>
   </gazebo>
 
   <!-- Lidar: gpu_lidar on lidar_link, 360 beams over a full circle, 10 Hz,
-       range 0.12-8 m, topic scan. gz_frame_id = frame_id in each message. -->
+       range 0.12-8 m. gz_frame_id = frame_id in each message. -->
   <gazebo reference="lidar_link">
     <sensor name="gpu_lidar" type="gpu_lidar">
       <always_on>true</always_on>
       <update_rate>10</update_rate>
-      <topic>scan</topic>
+      <topic>/$(arg robot_name)/scan</topic>
       <gz_frame_id>lidar_link</gz_frame_id>
       <lidar>
         <scan>
@@ -232,14 +240,15 @@
     </sensor>
   </gazebo>
 
-  <!-- Camera on camera_link: 640x480 RGB at 30 Hz, 80 deg horizontal FOV,
-       topics camera/image and camera/camera_info. -->
+  <!-- Camera on camera_link (only with camera:=true): 640x480 RGB, 80 deg
+       horizontal FOV, gz derives camera_info next to the image topic. -->
+  <xacro:if value="$(arg camera)">
   <gazebo reference="camera_link">
     <sensor name="camera" type="camera">
       <always_on>true</always_on>
       <!-- 5 Hz (tutorial: 30): software rendering is the sim bottleneck. -->
       <update_rate>5</update_rate>
-      <topic>camera/image</topic>
+      <topic>/$(arg robot_name)/camera/image</topic>
       <gz_frame_id>camera_link</gz_frame_id>
       <camera>
         <horizontal_fov>1.3963</horizontal_fov>
@@ -255,5 +264,6 @@
       </camera>
     </sensor>
   </gazebo>
+  </xacro:if>
 
 </robot>

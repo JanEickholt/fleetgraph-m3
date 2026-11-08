@@ -54,12 +54,17 @@ OBSTACLES = [
 ]
 
 # Named places (registry ids are the contract's Location.id values).
+# Homes: robot_1 spawns at dock, robot_N at dock_N (sim/nav launch files).
+# dock_2/dock_3 keep > 0.45 m (inflation) from walls and > 1 m from the other
+# docks and from hall, off the dock -> lab_1 and dock_2 -> lab_2 lanes.
 LOCATIONS = [
     ('dock', 'Charging dock', 0.0, 0.0, 0.0),
     ('storage', 'Storage', 1.5, 1.5, math.pi / 2),
     ('hall', 'Hall', 2.0, -1.5, 0.0),
     ('lab_1', 'Laboratory 1', 6.0, 1.2, 0.0),
     ('lab_2', 'Laboratory 2', 6.5, -1.5, 0.0),
+    ('dock_2', 'Charging dock 2', 2.8, -2.3, 0.0),
+    ('dock_3', 'Charging dock 3', 0.0, -1.5, 0.0),
 ]
 
 
