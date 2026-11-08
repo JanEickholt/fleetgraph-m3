@@ -80,13 +80,14 @@
 
 ### Social zones — no motion model
 
-- **Cost:** a person is a disc of body plus `min_distance`, a group the convex hull of its members'
-  discs plus `group_margin`, redrawn from each scene-graph update. The scene graph estimates each
-  entity's velocity, but `social_zones` ignores it: the zone trails a walking person, and nothing
-  keeps the robot out of the space the person walks into.
-- **Why deferred:** the required scenes (a person blocking the route, a group in a corridor) work
-  with zones that follow detections; motion-aware zones need velocity estimates good enough to
-  trust.
+- **Cost:** `social_zones` turns a person into a disc of body plus `min_distance` and a group into
+  the convex hull of its members' discs plus `group_margin`, from entity positions alone. The scene
+  graph estimates each entity's velocity, but `social_zones` ignores it: a zone built from the
+  latest graph trails a walking person, and nothing keeps the robot out of the space the person
+  walks into.
+- **Why deferred:** the required scenes (a person blocking the route, a group in a corridor) need
+  zones that follow detections, not predictions; motion-aware zones need velocity estimates good
+  enough to trust.
 - **Trigger:** a scene where the robot passes closer than `min_distance` to a walking person, or the
   week-14 social metrics failing on moving people.
 - **Where:** `src/fleetgraph_robot/fleetgraph_robot/social.py` (`SocialParams`, `social_zones`);
