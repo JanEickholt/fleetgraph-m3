@@ -168,9 +168,11 @@ class View:
 
 
 def _task_history(task_updates):
-    """Per task: compressed state history [(sim t, source, state, code)]."""
+    """Per task: compressed state history [(sim t, source, state, code)], in
+    Meta.stamp order like the task assertions (arrival order can put the
+    agent's REJECTED before the mock's RECEIVED); t is the arrival time."""
     history = {}
-    for timestamp, msg in task_updates:
+    for timestamp, msg in sorted(task_updates, key=assertions._meta_stamp):
         entries = history.setdefault(msg.task_id, [])
         entry = (round(timestamp, 1), msg.meta.source_id, msg.state, msg.error_code)
         if not entries or entries[-1][1:] != entry[1:]:

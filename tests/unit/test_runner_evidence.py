@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 from runner import _evidence
 
+REJECTED, RECEIVED = 9, 0
+
 
 def odom_msg(x, y):
     return SimpleNamespace(pose=SimpleNamespace(
@@ -41,3 +43,22 @@ def test_longest_gap_per_topic():
     evidence = _evidence(recording(10.0, 10.0, streams), [], wall_sec=10.0)
     assert evidence['/fleet/robot_state'] == {'count': 4, 'per_sec': 0.4, 'max_gap_sec': 2.5}
     assert evidence['/sim/truth'] == {'count': 1, 'per_sec': 0.1}
+
+
+def task_update(task_id, source, state, stamp_sec, code=0):
+    return SimpleNamespace(task_id=task_id, state=state, error_code=code,
+                           meta=SimpleNamespace(source_id=source,
+                                                stamp=SimpleNamespace(sec=stamp_sec, nanosec=0)))
+
+
+def test_task_history_follows_the_stamps_not_the_arrival():
+    # under discovery delay the agent's REJECTED reached the recorder before
+    # the mock's RECEIVED; the assertions order by Meta.stamp, so does evidence
+    arrivals = [(4.7, task_update('rej-1', 'robot_1', REJECTED, 11, code=201)),
+                (4.8, task_update('rej-1', 'm1_mock', RECEIVED, 10)),
+                (4.8, task_update('other', 'm1_mock', RECEIVED, 10))]
+    evidence = _evidence(recording(10.0, 10.0, {'/fleet/task_update': arrivals}), [],
+                         wall_sec=10.0)
+    assert evidence['task_history'] == {
+        'rej-1': [(4.8, 'm1_mock', RECEIVED, 0), (4.7, 'robot_1', REJECTED, 201)],
+        'other': [(4.8, 'm1_mock', RECEIVED, 0)]}
