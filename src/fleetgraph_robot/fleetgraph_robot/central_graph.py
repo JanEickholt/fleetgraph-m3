@@ -94,15 +94,16 @@ def _merged(name, defaults, overrides):
     return defaults
 
 
-def classify_persistence(entity: Entity, now: float,
-                         params: FusionParams | None = None) -> str | None:
-    """'persistent' once an OBSTACLE or OBJECT has been present for
-    persistent_after_sec since it was first seen, 'temporary' before; None
-    for other categories."""
+def classify_persistence(entity: Entity, params: FusionParams | None = None) -> str | None:
+    """'persistent' once an OBSTACLE or OBJECT has been observed over
+    persistent_after_sec (first_seen to last_seen), 'temporary' before; None
+    for other categories. Time in the graph without a new observation does
+    not count: an obstacle seen once stays temporary until it expires."""
     if entity.category not in _PERSISTENCE:
         return None
     params = params if params is not None else FusionParams()
-    return 'persistent' if now - entity.first_seen >= params.persistent_after_sec else 'temporary'
+    observed = entity.last_seen - entity.first_seen
+    return 'persistent' if observed >= params.persistent_after_sec else 'temporary'
 
 
 @dataclass
@@ -145,7 +146,9 @@ class CentralSceneGraph:
     # ---- update
 
     def ingest(self, observation: Observation, now: float) -> GraphUpdate | None:
-        """None when the published graph did not change."""
+        """None when the published graph did not change. now (the receipt
+        time) must be finite; persistence follows the entities' own
+        first_seen and last_seen."""
         _validate(observation, now)
         robot = observation.robot_id
         # removals first: a robot that re-creates a track may rejoin its old entity
@@ -165,11 +168,11 @@ class CentralSceneGraph:
                 self._report(node, robot, entity)
         self._associate(robot, fresh)
         self._robot_relations[robot] = list(observation.relations)
-        return self._publish(robot, now)
+        return self._publish(robot)
 
     def expire(self, now: float) -> GraphUpdate | None:
         """Ends contributions not re-observed for their category's ttl (a
-        silent robot's included) and publishes persistence changes."""
+        silent robot's included)."""
         if not math.isfinite(now):
             raise ValueError(f'now must be finite, got {now!r}')
         for node in list(self._nodes.values()):
@@ -178,7 +181,7 @@ class CentralSceneGraph:
             for robot, report in list(node.reports.items()):
                 if now - report.last_seen > self._params.ttl[node.category]:
                     self._drop(robot, report.id)
-        return self._publish('', now)
+        return self._publish('')
 
     def _associate(self, robot, fresh):
         """Nearest pair first, so the order of new tracks never decides."""
@@ -229,8 +232,8 @@ class CentralSceneGraph:
 
     # ---- publishing
 
-    def _publish(self, source_robot_id, now):
-        fused = {node_id: self._fuse(node, now) for node_id, node in self._nodes.items()}
+    def _publish(self, source_robot_id):
+        fused = {node_id: self._fuse(node) for node_id, node in self._nodes.items()}
         added = [entity for node_id, entity in fused.items() if node_id not in self._published]
         updated = [entity for node_id, entity in fused.items() if node_id in self._published
                    and self._changed(self._published[node_id], entity)]
@@ -279,7 +282,7 @@ class CentralSceneGraph:
             return local_id         # regions are shared: no need to have reported them
         return node_id
 
-    def _fuse(self, node, now):
+    def _fuse(self, node):
         robots = sorted(node.reports)
         reports = [node.reports[robot] for robot in robots]
         weights = _weights(reports)
@@ -300,7 +303,7 @@ class CentralSceneGraph:
             vy=_mean(weights, [report.vy for report in reports]),
             confidence=1.0 - missed, first_seen=node.first_seen, last_seen=node.last_seen,
             member_ids=sorted(members), source_ids=robots, attributes=dict(lead.attributes))
-        persistence = classify_persistence(entity, now, self._params)
+        persistence = classify_persistence(entity, self._params)
         if persistence is not None:
             entity.attributes['persistence'] = persistence
         return entity

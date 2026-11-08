@@ -248,7 +248,7 @@ def test_a_robots_relations_end_with_its_contributions():
 
 # ----------------------------------------------------------- persistence
 
-def test_obstacles_turn_persistent_after_being_present_long_enough():
+def test_obstacles_turn_persistent_once_observed_long_enough():
     graph = CentralSceneGraph(FusionParams(persistent_after_sec=30.0))
     box = track('robot_1', 1, Category.OBJECT, 2.0, 0.0, seen=(0.0, 0.0))
     crate = track('robot_1', 2, Category.OBSTACLE, 2.5, 0.8, seen=(10.0, 10.0))
@@ -257,23 +257,25 @@ def test_obstacles_turn_persistent_after_being_present_long_enough():
     assert [entity.attributes.get('persistence') for entity in graph.entities()] == \
         ['temporary', 'temporary', None]
     observe(graph, 'robot_1', 25.0, [replace(box, last_seen=25.0)], removed=[walker.id])
-    assert graph.expire(29.9) is None
-    update = graph.expire(30.0)                         # the box has been there since 0.0
+    assert graph.expire(30.0) is None                   # time in the graph alone does not count
+    update = observe(graph, 'robot_1', 30.0, [replace(box, last_seen=30.0)])
     assert [(entity.id, entity.attributes['persistence']) for entity in update.updated] == \
-        [('g/object/1', 'persistent')]
-    update = graph.expire(40.0)
-    assert [(entity.id, entity.attributes['persistence']) for entity in update.updated] == \
-        [('g/obstacle/2', 'persistent')]
+        [('g/object/1', 'persistent')]                  # observed from 0.0 to 30.0
+    assert graph.expire(40.0) is None                   # the crate, seen once, stays temporary
+    assert by_id(graph)['g/obstacle/2'].attributes['persistence'] == 'temporary'
+    assert graph.expire(40.5).removed_ids == ['g/obstacle/2']      # until its ttl runs out
 
 
 def test_classify_persistence_applies_to_obstacles_and_objects_only():
     params = FusionParams(persistent_after_sec=30.0)
-    box = Entity('g/object/1', Category.OBJECT, 'box', 0.0, 0.0, first_seen=10.0)
-    assert classify_persistence(box, 39.9, params) == 'temporary'
-    assert classify_persistence(box, 40.0, params) == 'persistent'
-    assert classify_persistence(replace(box, category=Category.OBSTACLE), 40.0) == 'persistent'
+    box = Entity('g/object/1', Category.OBJECT, 'box', 0.0, 0.0, first_seen=10.0,
+                 last_seen=39.9)
+    assert classify_persistence(box, params) == 'temporary'
+    seen_for_30 = replace(box, last_seen=40.0)
+    assert classify_persistence(seen_for_30, params) == 'persistent'
+    assert classify_persistence(replace(seen_for_30, category=Category.OBSTACLE)) == 'persistent'
     for category in (Category.PERSON, Category.GROUP, Category.ROBOT, Category.PLACE):
-        assert classify_persistence(replace(box, category=category), 40.0, params) is None
+        assert classify_persistence(replace(seen_for_30, category=category), params) is None
 
 
 # ------------------------------------------------------------ versioning
