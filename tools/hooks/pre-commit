@@ -4,7 +4,7 @@
 #   bypass (emergency only): git commit --no-verify
 #
 # 1. generated files (world/map/locations, docs/contracts.json) match their source
-# 2. the fleetgraph-m3 container runs AND bind-mounts THIS checkout (otherwise
+# 2. this checkout's fleetgraph container runs AND bind-mounts THIS checkout (otherwise
 #    the tests would exercise another checkout's code: a false green)
 # 3. rebuild if build inputs changed, then ./t --fast (~25 s, no sim)
 # Docs-only commits skip everything. Slow tiers (./t -k weekly / demo) stay
@@ -24,13 +24,17 @@ fi
 python3 -I tools/gen_world.py --check
 python3 -I tools/export_contracts.py --check
 
-running=$(docker inspect -f '{{.State.Running}}' fleetgraph-m3 2>/dev/null || echo false)
+# the compose project of THIS checkout (compose.yaml name, or COMPOSE_PROJECT_NAME
+# from .env for a second sim slot) decides which container that is
+container=$(docker compose ps -q fleetgraph 2>/dev/null || true)
+running=false
+[ -n "$container" ] && running=$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || echo false)
 if [ "$running" != "true" ]; then
-  echo "pre-commit: container fleetgraph-m3 is not running." >&2
+  echo "pre-commit: the fleetgraph container of this checkout is not running." >&2
   echo "  start it from $root:  docker compose up -d   (bypass: git commit --no-verify)" >&2
   exit 1
 fi
-mounted=$(docker inspect fleetgraph-m3 --format \
+mounted=$(docker inspect "$container" --format \
   '{{range .Mounts}}{{if eq .Destination "/home/ubuntu/ws/src"}}{{.Source}}{{end}}{{end}}')
 if [ "$mounted" != "$root/src" ]; then
   echo "pre-commit: container mounts $mounted," >&2
