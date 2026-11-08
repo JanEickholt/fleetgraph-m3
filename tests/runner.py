@@ -6,6 +6,7 @@ Usage: runner.run(path) -> result dict:
   {name, passed, failures, expect_failure, evidence}
 Raise ScenarioError for invalid scenario files.
 """
+import inspect
 import os
 import random
 import signal
@@ -48,6 +49,24 @@ def _process_tag(action):
     return None
 
 
+def _parameter_error(kind, params):
+    """Why `params` do not fit the signature of assertion `kind`, or None:
+    an unknown key would otherwise be ignored and its filter fall back to
+    the permissive default, a missing one fail only after the run."""
+    if not isinstance(params, dict):
+        return f"parameters must be a mapping, got {params!r}"
+    parameters = list(inspect.signature(assertions.REGISTRY[kind]).parameters.values())[1:]
+    names = [parameter.name for parameter in parameters]       # without `view`
+    unknown = sorted(set(params) - set(names))
+    if unknown:
+        return f"unknown parameter(s) {unknown}; {kind} takes {names}"
+    missing = [parameter.name for parameter in parameters
+               if parameter.default is inspect.Parameter.empty and parameter.name not in params]
+    if missing:
+        return f"missing required parameter(s) {missing}"
+    return None
+
+
 def validate(scenario, origin='scenario'):
     if not isinstance(scenario, dict):
         raise ScenarioError(
@@ -57,10 +76,13 @@ def validate(scenario, origin='scenario'):
             raise ScenarioError(f"{origin}: missing required key '{key}'")
     for assertion in scenario['assert']:
         kinds = [key for key in assertion if key in assertions.REGISTRY]
-        if len(kinds) != 1:
+        if len(kinds) != 1 or len(assertion) != 1:
             raise ScenarioError(
                 f"{origin}: each assert needs exactly one type out of "
-                f"{sorted(assertions.REGISTRY)}, got: {assertion}")
+                f"{sorted(assertions.REGISTRY)} and nothing else, got: {assertion}")
+        error = _parameter_error(kinds[0], assertion[kinds[0]])
+        if error:
+            raise ScenarioError(f"{origin}: {kinds[0]}: {error}, got: {assertion}")
     for action in scenario['actions']:
         kinds = [key for key in action if key in ACTION_KINDS]
         if len(kinds) != 1 or 't' not in action:

@@ -3,7 +3,10 @@ canned recordings (see unit/test_assertions.py).
 
 Contract: fn(view, **params) -> None when PASS, else a one-line failure
 string with observed values. view.stream(topic) -> list[(t, msg)];
-view.duration() -> window length in the active timebase.
+view.duration() -> window length in the active timebase. The keyword
+parameters are the whole vocabulary: runner.validate() rejects a scenario
+that names any other key, so no assertion takes a catch-all **kwargs (a
+misspelled filter would silently fall back to its permissive default).
 
 Adding an assertion type = one function + one REGISTRY entry. Scenario
 YAML then uses it by name. Do not add types without a unit test that
@@ -46,7 +49,7 @@ def _yaw_deg(orientation):
 
 
 @register
-def publishes(view, topic, **_):
+def publishes(view, topic):
     if not view.stream(topic):
         return f"no message ever recorded on {topic}"
     return None
@@ -65,7 +68,7 @@ def _where(topic, source):
 
 
 @register
-def min_rate(view, topic, hz, margin=None, source=None, **_):
+def min_rate(view, topic, hz, margin=None, source=None):
     stream = _from_source(view.stream(topic), source)
     where = _where(topic, source)
     if not stream:
@@ -86,7 +89,7 @@ def min_rate(view, topic, hz, margin=None, source=None, **_):
 
 
 @register
-def arrives_at(view, topic, x, y, tol, source=None, **_):
+def arrives_at(view, topic, x, y, tol, source=None):
     stream = _from_source(view.stream(topic), source)
     where = _where(topic, source)
     for _, msg in stream:
@@ -102,7 +105,7 @@ def arrives_at(view, topic, x, y, tol, source=None, **_):
 
 
 @register
-def never_below(view, topic, field, threshold, **_):
+def never_below(view, topic, field, threshold):
     # NaN compares False against everything, so `min()` over a stream
     # containing NaN silently discards it. Check EVERY element; NaN
     # anywhere = violation (safety assertions fail closed on unknown).
@@ -124,7 +127,7 @@ def never_below(view, topic, field, threshold, **_):
 
 
 @register
-def final_value(view, topic, field, equals, tol=0.01, **_):
+def final_value(view, topic, field, equals, tol=0.01):
     stream = view.stream(topic)
     if not stream:
         return f"no messages on {topic}"
@@ -137,7 +140,7 @@ def final_value(view, topic, field, equals, tol=0.01, **_):
 
 
 @register
-def yaw_final(view, topic, deg, tol, **_):
+def yaw_final(view, topic, deg, tol):
     """Final /odom yaw (quaternion -> yaw, degrees) equals `deg` within tol.
 
     Wraps angular difference to [-180, 180], so 350 vs -10 is a 0-deg error.
@@ -193,7 +196,7 @@ def _history(events):
 
 @register
 def task_state(view, task_id, state, topic='/fleet/task_update',
-               error_code=None, source=None, within_sec=None, **_):
+               error_code=None, source=None, within_sec=None):
     """Some TaskUpdate for task_id has `state` (+ error_code / source, and
     sim time <= within_sec if given: the earliest such update's arrival)."""
     wanted_state = TASK_STATES[state]
@@ -211,7 +214,7 @@ def task_state(view, task_id, state, topic='/fleet/task_update',
 
 
 @register
-def seq_contiguous(view, topic, **_):
+def seq_contiguous(view, topic):
     """Contract Meta.seq: per source_id, recorded seq values are +1 steps
     (no gap = no lost event, no repeat = no duplicate). The first recorded
     seq per source may be > 1 (recorder joined late)."""
@@ -230,7 +233,7 @@ def seq_contiguous(view, topic, **_):
 
 
 @register
-def task_sequence(view, task_id, states, topic='/fleet/task_update', **_):
+def task_sequence(view, task_id, states, topic='/fleet/task_update'):
     """The task's state history contains `states` in this order
     (other states may occur in between)."""
     history = _history(_task_events(view, topic, task_id))
@@ -304,7 +307,7 @@ def _wanted(category, x, y, tol, sources, attribute):
 
 @register
 def graph_has(view, topic, category, x, y, tol, sources=None, attribute=None,
-              within_sec=None, after_sec=None, **_):
+              within_sec=None, after_sec=None):
     """Some graph state reconstructed from `topic` (SceneGraphUpdate deltas
     and snapshots, e.g. a replica's snapshot topic) holds an entity of
     `category` within tol of (x, y), fed by every robot in `sources` and
@@ -335,7 +338,7 @@ def graph_has(view, topic, category, x, y, tol, sources=None, attribute=None,
 
 
 @register
-def graph_lacks_after(view, topic, category, x, y, tol, t, sources=None, attribute=None, **_):
+def graph_lacks_after(view, topic, category, x, y, tol, t, sources=None, attribute=None):
     """No graph state reconstructed from `topic` that is in force at or
     after window time t holds an entity matching as in graph_has. Fails on
     an empty stream: a silent topic proves no absence."""
@@ -351,7 +354,7 @@ def graph_lacks_after(view, topic, category, x, y, tol, t, sources=None, attribu
 
 
 @register
-def graph_versions_consistent(view, topic, **_):
+def graph_versions_consistent(view, topic):
     """Every recorded delta applies on top of the message before it:
     base_version = previous graph_version and graph_version = base_version
     + 1. A snapshot restarts the chain; the first delta may start anywhere
@@ -372,7 +375,7 @@ def graph_versions_consistent(view, topic, **_):
 
 
 @register
-def graph_matches(view, topic, reference, tol=0.01, **_):
+def graph_matches(view, topic, reference, tol=0.01):
     """The final graph reconstructed from `topic` equals the final one from
     `reference`: same graph_version and the same entities (id, category,
     sources, attributes, position within tol)."""
@@ -402,7 +405,7 @@ def graph_matches(view, topic, reference, tol=0.01, **_):
 # ------------------------------------------------- Module 1 / Module 2 link
 @register
 def no_task_update(view, task_id=None, robot_id=None, source=None, state=None,
-                   topic='/fleet/task_update', **_):
+                   topic='/fleet/task_update'):
     """No TaskUpdate matches all given filters: task_id, msg.robot_id,
     Meta.source_id, state. `robot_id: robot_3` = never assigned to robot_3 and
     nothing reported by it. An empty recording fails: absence there proves
@@ -422,7 +425,7 @@ def no_task_update(view, task_id=None, robot_id=None, source=None, state=None,
 
 
 @register
-def always_value(view, topic, field, equals, tol=0.01, source=None, **_):
+def always_value(view, topic, field, equals, tol=0.01, source=None):
     """Every message (from `source`) has numeric `field` == equals ± tol;
     NaN fails."""
     stream = _from_source(view.stream(topic), source)
@@ -461,7 +464,7 @@ def _sector_ranges(scan, bearing_deg, half_width_deg):
 
 @register
 def scan_range(view, topic, bearing_deg, min_m=0.0, max_m=math.inf, half_width_deg=2.0,
-               from_sec=0.0, to_sec=math.inf, **_):
+               from_sec=0.0, to_sec=math.inf):
     """Every LaserScan in the window: the closest return within
     half_width_deg of bearing_deg (scan frame) lies in [min_m, max_m].
     REP 117 readings: -inf (too close) counts as 0, +inf as no return
@@ -498,7 +501,7 @@ def _entity_text(entity_id, x, y, tol):
 
 @register
 def entity_near(view, topic, x, y, tol, min_fraction=1.0, entity_id=None,
-                from_sec=0.0, to_sec=math.inf, **_):
+                from_sec=0.0, to_sec=math.inf):
     """At least min_fraction of the messages in the window carry an entity
     within tol of (x, y)."""
     window = _in_window(view.stream(topic), from_sec, to_sec)
@@ -516,8 +519,7 @@ def entity_near(view, topic, x, y, tol, min_fraction=1.0, entity_id=None,
 
 
 @register
-def no_entity_near(view, topic, x, y, tol, entity_id=None, from_sec=0.0, to_sec=math.inf,
-                   **_):
+def no_entity_near(view, topic, x, y, tol, entity_id=None, from_sec=0.0, to_sec=math.inf):
     """No message in the window carries an entity within tol of (x, y).
     Absence needs evidence: a window without messages fails."""
     window = _in_window(view.stream(topic), from_sec, to_sec)
@@ -559,7 +561,7 @@ def _seconds(stamp):
 
 
 @register
-def observes(view, topic, source, category, x, y, tol, within_sec=None, **_):
+def observes(view, topic, source, category, x, y, tol, within_sec=None):
     """Some SceneObservation from source reports an entity of the category
     within tol of (x, y), by sim time within_sec if given."""
     stream = _from_source(view.stream(topic), source)
@@ -582,7 +584,7 @@ def observes(view, topic, source, category, x, y, tol, within_sec=None, **_):
 
 
 @register
-def observes_only(view, topic, source, category, points, tol, **_):
+def observes_only(view, topic, source, category, points, tol):
     """Every entity of the category that source reports lies within tol of
     one of the listed [x, y] points: a false-positive guard (walls reported
     as obstacles, map misalignment). Fails closed without messages."""
@@ -606,7 +608,7 @@ def observes_only(view, topic, source, category, points, tol, **_):
 
 
 @register
-def relation_seen(view, topic, source, predicate, object_id, subject_category=None, **_):
+def relation_seen(view, topic, source, predicate, object_id, subject_category=None):
     """Some message from source holds `<subject> predicate object_id`; with
     subject_category, the subject is an entity of that category (as source
     reported it anywhere in the recording: a relation may name an entity
@@ -634,7 +636,7 @@ def relation_seen(view, topic, source, predicate, object_id, subject_category=No
 
 
 @register
-def removal_seen(view, topic, source, category, x, y, tol, **_):
+def removal_seen(view, topic, source, category, x, y, tol):
     """An entity of the category that source reported within tol of (x, y)
     appears in a LATER message's removed_entity_ids."""
     stream = _from_source(view.stream(topic), source)
@@ -658,7 +660,7 @@ def removal_seen(view, topic, source, category, x, y, tol, **_):
 
 
 @register
-def latency_below(view, topic, max_sec, source=None, **_):
+def latency_below(view, topic, max_sec, source=None):
     """Perception latency below max_sec: per message, meta.stamp -
     sensor_pose.header.stamp (sim s), the age of the newest sensor data an
     observation is built from when it is published. Fails on the maximum."""

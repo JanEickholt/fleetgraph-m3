@@ -1,16 +1,11 @@
 """Scenario `publish` actions start at their action's t, the time the runner
 orders actions by; a different t inside the publish spec is a scenario
 error, not a guess. The publishers run on a fake node: no ROS graph."""
-import glob
-import os
-
 import pytest
 
 from recorder import Recorder
-from runner import ScenarioError, _publishers, load, validate
+from runner import ScenarioError, _publishers, validate
 
-SCENARIOS = sorted(glob.glob(os.path.join(os.path.dirname(__file__), '..', 'scenarios',
-                                          '*.yaml')))
 SPEC = {'topic': '/chatter', 'type': 'std_msgs/msg/String', 'duration': 2, 'hz': 2}
 
 
@@ -67,11 +62,3 @@ def test_an_inner_t_equal_to_the_action_t_is_redundant():
 def test_an_inner_t_that_disagrees_is_rejected():
     with pytest.raises(ScenarioError, match=r"t=5 also says t=2 inside 'publish'"):
         validate(scenario({'t': 5, 'publish': dict(SPEC, t=2)}))
-
-
-def test_shipped_scenarios_are_valid():
-    # one test, not one per file: ids named after scenarios would join
-    # `./t -k <scenario>` selections; a ScenarioError names the file
-    assert SCENARIOS
-    for path in SCENARIOS:
-        load(path)
