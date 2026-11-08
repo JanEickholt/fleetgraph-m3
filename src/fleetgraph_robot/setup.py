@@ -23,6 +23,7 @@ setup(
             'mock_orchestrator = fleetgraph_robot.mock_orchestrator:main',
             'mock_central = fleetgraph_robot.mock_central_node:main',
             'scene_replica = fleetgraph_robot.scene_replica_node:main',
+            'perception = fleetgraph_robot.perception_node:main',
         ],
     },
 )

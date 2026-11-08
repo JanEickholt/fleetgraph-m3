@@ -1,0 +1,39 @@
+name: weekly_perception_crate
+# Local perception (weeks 5-6): robot_1's perception node builds its local
+# scene graph from the lidar (returns where the static map says free) and
+# publishes SceneObservation deltas to Module 1 while the agent drives the
+# go_to lab_1 route past the unmapped crate (2.5, 0.8). Checks: the crate is
+# reported where it is, nothing else is reported as an obstacle (walls, map
+# misalignment), its INSIDE hall relation, perception latency, gap-free
+# delivery, and that navigation is undisturbed (ground truth).
+# Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py
+  ready_timeout_sec: 240
+topics:
+  /fleet/scene_observation: fleetgraph_interfaces/msg/SceneObservation
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /ground_truth/robot_1/odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: perception,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - {t: 15, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/go_to_lab1.yaml"}}
+window_sec: 120
+assert:
+  # the crate's centre, although the lidar sees only its near faces
+  - observes: {topic: /fleet/scene_observation, source: robot_1, category: OBSTACLE,
+               x: 2.5, y: 0.8, tol: 0.25}
+  - observes_only: {topic: /fleet/scene_observation, source: robot_1, category: OBSTACLE,
+                    points: [[2.5, 0.8]], tol: 0.5}
+  - relation_seen: {topic: /fleet/scene_observation, source: robot_1, predicate: INSIDE,
+                    object_id: hall, subject_category: OBSTACLE}
+  - latency_below: {topic: /fleet/scene_observation, source: robot_1, max_sec: 0.5}
+  # deltas are stateful (a removal is reported once): none may be lost
+  - seq_contiguous: {topic: /fleet/scene_observation}
+  - task_state: {task_id: task-lab1, state: COMPLETED, source: robot_1}
+  # lab_1 = (6.0, 1.2); Nav2 goal checker xy tolerance 0.25 + AMCL error
+  - arrives_at: {topic: /ground_truth/robot_1/odom, x: 6.0, y: 1.2, tol: 0.35}
