@@ -67,6 +67,11 @@ def validate(scenario, origin='scenario'):
             raise ScenarioError(
                 f"{origin}: each action needs 't' plus exactly one of "
                 f"{list(ACTION_KINDS)}, got: {action}")
+        publish = action.get('publish')
+        if isinstance(publish, dict) and publish.get('t', action['t']) != action['t']:
+            raise ScenarioError(
+                f"{origin}: publish action at t={action['t']} also says t={publish['t']} "
+                f"inside 'publish'; the action's t is the start time, give it once")
     tags = [SIM_TAG] if scenario.get('sim') else []
     tags += [tag for tag in map(_process_tag, scenario['actions']) if tag is not None]
     for tag in tags:
@@ -175,6 +180,13 @@ def _start_action(action):
     return None
 
 
+def _publishers(recorder, actions):
+    """One publisher per `publish` action, all created before the window
+    opens so discovery starts early; each publishes from its action's t."""
+    return [recorder.make_publisher(action['publish'], start=action['t'])
+            for action in actions if 'publish' in action]
+
+
 def _wait_for_clock(recorder, sim):
     timeout_sec = sim.get('ready_timeout_sec', DEFAULT_SIM_READY_TIMEOUT_SEC)
     deadline = time.time() + float(timeout_sec)
@@ -212,8 +224,7 @@ def run(path):
                            if sim else None)
         last_seen_clock = None
         last_clock_progress_wall = time.time()
-        publishers = [recorder.make_publisher(action['publish'])
-                      for action in scenario['actions'] if 'publish' in action]
+        publishers = _publishers(recorder, scenario['actions'])
         pending_actions = sorted(scenario['actions'], key=lambda action: action['t'])
         window_sec = float(scenario['window_sec'])
 

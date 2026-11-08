@@ -53,18 +53,19 @@ def hydrate(msg_class, data):
 
 
 class _ScenarioPublisher:
-    """A scenario `publish` action: msg at hz from t for duration seconds."""
+    """A scenario `publish` action: msg at hz for duration seconds from
+    start, the action's t."""
 
-    def __init__(self, node, spec):
+    def __init__(self, node, spec, start):
         self.spec = spec
+        self.start = float(start)
         self.msg_class = get_message(spec['type'])
         self.publisher = node.create_publisher(self.msg_class, spec['topic'], 10)
         self._next_publish_time = None
 
     def tick(self, now):
-        start = float(self.spec.get('t', 0))
         duration = float(self.spec.get('duration', 1))
-        if now < start or now > start + duration:
+        if now < self.start or now > self.start + duration:
             return
         if self._next_publish_time is None or now >= self._next_publish_time:
             self.publisher.publish(hydrate(self.msg_class, self.spec.get('msg', {})))
@@ -106,8 +107,8 @@ class Recorder(Node):
             qos = qos_profile_sensor_data
         self.create_subscription(msg_class, topic, store, qos)
 
-    def make_publisher(self, spec):
-        return _ScenarioPublisher(self, spec)
+    def make_publisher(self, spec, start):
+        return _ScenarioPublisher(self, spec, start)
 
     def start_window(self):
         self._window_start_wall = time.time()
