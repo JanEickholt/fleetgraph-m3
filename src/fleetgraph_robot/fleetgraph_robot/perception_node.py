@@ -14,10 +14,12 @@ ground truth.
 Per scan: the lidar's map pose at the scan stamp (TF, corrected against the
 static map by MapMatcher), lidar obstacles against the static map plus the
 semantic detections sensed up to that stamp (each placed with TF at its own
-stamp), and one LocalSceneGraph.integrate() with the scan's coverage. At
-publish_rate_hz the delta goes out when it holds anything (entities,
-removals, a changed relation set), otherwise at least every heartbeat_sec.
-Nothing is published before the first integrated scan.
+stamp), and one LocalSceneGraph.integrate() with per-sensor coverage: the
+scan's, and the detector's from each detection frame folded in (at that
+frame's stamp), so a track decays only on frames of sensors that saw it
+before. At publish_rate_hz the delta goes out when it holds anything
+(entities, removals, a changed relation set), otherwise at least every
+heartbeat_sec. Nothing is published before the first integrated scan.
 
 Latency = meta.stamp - sensor_pose.header.stamp: how old the newest scan in
 a published observation is (sim seconds).
@@ -28,8 +30,7 @@ from collections import deque
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from diagnostic_msgs.msg import KeyValue
-from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped, Vector3
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
@@ -39,13 +40,14 @@ from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from fleetgraph_interfaces.msg import SceneEntity, SceneObservation, SceneRelation
-from fleetgraph_robot import contract
+from fleetgraph_interfaces.msg import SceneObservation
+from fleetgraph_robot import contract, scene_msgs
 from fleetgraph_robot.lidar_obstacles import obstacle_detections
 from fleetgraph_robot.perception import (
-    MapMatcher, coverage, localization_score, occupancy_from_grid, semantic_detections)
+    SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
+    localization_score, map_correction, occupancy_from_grid, semantic_detections)
 from fleetgraph_robot.regions import load_regions
-from fleetgraph_robot.scene_graph import LocalSceneGraph
+from fleetgraph_robot.scene_graph import LIDAR_SOURCE, LocalSceneGraph
 
 # The TF of a scan (odom -> base_footprint at 30 Hz) arrives up to ~40 ms of
 # sim time after the scan (measured 2026-11-08): pending scans are retried at
@@ -57,11 +59,6 @@ MAP_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
-def time_msg(seconds):
-    """Sim seconds -> builtin_interfaces/Time."""
-    return Time(nanoseconds=round(seconds * 1e9)).to_msg()
-
-
 def pose_stamped(transform):
     """TransformStamped -> PoseStamped of its child frame in its frame."""
     translation = transform.transform.translation
@@ -69,33 +66,6 @@ def pose_stamped(transform):
     pose.pose.position = Point(x=translation.x, y=translation.y, z=translation.z)
     pose.pose.orientation = transform.transform.rotation
     return pose
-
-
-def observation_msg(delta, robot_id, frame_id, sensor_pose, confidence):
-    """scene_graph.Delta -> SceneObservation (meta filled by MetaStamper)."""
-    return SceneObservation(
-        robot_id=robot_id, frame_id=frame_id, sensor_pose=sensor_pose,
-        entities=[_entity_msg(entity) for entity in delta.entities],
-        relations=[SceneRelation(subject_id=relation.subject_id,
-                                 predicate=int(relation.predicate),
-                                 object_id=relation.object_id,
-                                 confidence=float(relation.confidence))
-                   for relation in delta.relations],
-        removed_entity_ids=list(delta.removed_ids), confidence=float(confidence))
-
-
-def _entity_msg(entity):
-    size_x, size_y, size_z = entity.size
-    return SceneEntity(
-        id=entity.id, category=int(entity.category), label=entity.label,
-        position=Point(x=float(entity.x), y=float(entity.y), z=float(entity.z)),
-        size=Vector3(x=float(size_x), y=float(size_y), z=float(size_z)),
-        velocity=Vector3(x=float(entity.vx), y=float(entity.vy), z=0.0),
-        confidence=float(entity.confidence),
-        first_seen=time_msg(entity.first_seen), last_seen=time_msg(entity.last_seen),
-        member_ids=list(entity.member_ids),
-        attributes=[KeyValue(key=key, value=value)
-                    for key, value in sorted(entity.attributes.items())])
 
 
 def _pose2d(transform):
@@ -130,6 +100,16 @@ class Perception(Node):
             # of a mapped cell count as the map.
             ('obstacle_range', 4.0),
             ('map_tolerance', 0.2),
+            # Field of view (deg) and range (m) of the semantic detector,
+            # looking along the x axis of the detections' frame_id; defaults:
+            # the simulated detector (fleetgraph_sim_tools DetectorParams).
+            ('detector_fov_deg', 120.0),
+            ('detector_range', 6.0),
+            # A frame covers a track (an unmatched one decays) only if the
+            # line of sight reaches both sides of a footprint this half-width
+            # (m, a crate's) across it too: a track the map hides in part,
+            # e.g. seen past a door frame, is no miss.
+            ('coverage_half_width', 0.2),
         ])
         self.params = {parameter.name: parameter.value for parameter in declared}
         self.robot_id = self.params['robot_id']
@@ -237,20 +217,27 @@ class Perception(Node):
         detections = obstacle_detections(
             scan.ranges, scan.angle_min, scan.angle_increment, scan.range_min, range_max,
             lidar, self._occupancy, stamp=now, tolerance=self.params['map_tolerance'])
-        detections += self._semantic_until(stamp)
-        self.graph.integrate(detections, now,
-                             coverage(self._occupancy, lidar[0], lidar[1], range_max))
+        coverage = {LIDAR_SOURCE: lidar_coverage(self._occupancy, lidar[0], lidar[1], range_max,
+                                                 self.params['coverage_half_width'])}
+        semantic, views = self._semantic_until(stamp, map_correction(amcl, lidar))
+        if views:
+            coverage[SEMANTIC_SOURCE] = any_view(views)
+        self.graph.integrate(detections + semantic, now, coverage)
         self._sensor_pose = pose_stamped(base)
         self._counts['scans'] += 1
 
-    def _semantic_until(self, stamp):
-        """Map-frame detections of the messages sensed up to stamp."""
-        detections = []
+    def _semantic_until(self, stamp, correction):
+        """Map-frame detections of the messages sensed up to stamp, and the
+        coverage of each of those frames (also of empty ones)."""
+        detections, views = [], []
         while self._detections and self._detections[0][0] <= stamp:
             sensed, frame_id, entities = self._detections.popleft()
             try:
-                pose = _pose2d(self.tf_buffer.lookup_transform(
-                    self.params['map_frame'], frame_id, sensed))
+                # The correction of the scan they join, the first at or after their
+                # stamp (<= 0.1 s later), not one interpolated to it: AMCL's map ->
+                # odom changes in steps at its filter updates, rarely in between.
+                pose = compose(correction, _pose2d(self.tf_buffer.lookup_transform(
+                    self.params['map_frame'], frame_id, sensed)))
             except TransformException as error:
                 self.get_logger().warn(f'detections dropped: {error}',
                                        throttle_duration_sec=10.0)
@@ -260,7 +247,10 @@ class Perception(Node):
             self._counts['detections'] += len(placed)
             self._counts['detections_dropped'] += len(entities) - len(placed)
             detections += placed
-        return detections
+            views.append(detector_coverage(self._occupancy, pose, self.params['detector_fov_deg'],
+                                           self.params['detector_range'],
+                                           self.params['coverage_half_width']))
+        return detections, views
 
     # ------------------------------------------------------------- output
     def _publish(self):
@@ -276,8 +266,8 @@ class Perception(Node):
                          >= Duration(seconds=self.params['heartbeat_sec']))
         if not (changed or heartbeat_due):
             return
-        msg = observation_msg(delta, self.robot_id, self.params['map_frame'],
-                              self._sensor_pose, self._localization_score)
+        msg = scene_msgs.observation_to_msg(delta, self.robot_id, self.params['map_frame'],
+                                            self._sensor_pose, self._localization_score)
         self.pub_observation.publish(self.meta.stamp(msg, contract.TOPIC_SCENE_OBSERVATION))
         self._published_relations = relations
         self._last_publish = now

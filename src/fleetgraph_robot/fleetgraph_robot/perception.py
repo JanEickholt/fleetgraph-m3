@@ -1,16 +1,17 @@
 """Pure glue between ROS data and the local perception core (scene_graph,
 lidar_obstacles): planar frame transforms, the lidar pose correction against
-the static map, the sensor coverage that decides where unmatched tracks
+the static map, the per-sensor coverage that decides where unmatched tracks
 decay, semantic detections in the map frame and the localization score. No
 rclpy and no message imports: messages are read by attribute
 (tests/unit/test_perception.py).
 """
 import math
+from collections.abc import Sequence
 
 import numpy as np
 
 from fleetgraph_robot.lidar_obstacles import OccupancyMap
-from fleetgraph_robot.scene_graph import PHYSICAL, Detection
+from fleetgraph_robot.scene_graph import PHYSICAL, Detection, InView
 
 Pose = tuple[float, float, float]           # x, y, yaw of a frame in the map frame
 SEMANTIC_SOURCE = 'detector'                # Detection.source of semantic detections
@@ -21,6 +22,20 @@ def to_map(pose: Pose, x: float, y: float) -> tuple[float, float]:
     origin_x, origin_y, yaw = pose
     cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
     return (origin_x + cos_yaw * x - sin_yaw * y, origin_y + sin_yaw * x + cos_yaw * y)
+
+
+def compose(pose: Pose, inner: Pose) -> Pose:
+    """inner, a pose given in the frame at pose -> the frame pose is given in."""
+    return (*to_map(pose, inner[0], inner[1]), pose[2] + inner[2])
+
+
+def map_correction(observed: Pose, corrected: Pose) -> Pose:
+    """The map-frame transform C with compose(C, observed) == corrected. All
+    TF map poses go through AMCL's map -> odom, so the error MapMatcher finds
+    at the lidar also corrects the robot's other frames: compose(C, pose)."""
+    turn = corrected[2] - observed[2]
+    turned_x, turned_y = to_map((0.0, 0.0, turn), observed[0], observed[1])
+    return (corrected[0] - turned_x, corrected[1] - turned_y, turn)
 
 
 class MapMatcher:
@@ -103,14 +118,57 @@ def _dilated(mask, reach_cells):
     return dilated
 
 
-def coverage(occupancy: OccupancyMap, sensor_x: float, sensor_y: float, max_range: float):
-    """in_view(x, y) of one lidar frame for LocalSceneGraph.integrate: within
-    max_range of the sensor and a line of sight through the STATIC map.
-    Unmapped obstacles do not shadow: a track hidden behind one decays too."""
-    def in_view(x, y):
+def lidar_coverage(occupancy: OccupancyMap, sensor_x: float, sensor_y: float,
+                   max_range: float, half_width: float = 0.0) -> InView:
+    """in_view(x, y) of one 360 deg lidar scan for LocalSceneGraph.integrate:
+    within max_range of the sensor and a line of sight through the STATIC
+    map, for the point and, with half_width, both sides of a footprint that
+    wide across the line of sight. A track the map hides in part is no
+    miss: its centre estimate drifts toward the part the scan sees, so a
+    crate seen past a door frame kept its centre in sight while the jamb
+    left too few returns for a cluster. Unmapped obstacles do not shadow: a
+    track hidden behind one decays too."""
+    def sees(x, y):
         return (math.hypot(x - sensor_x, y - sensor_y) <= max_range
                 and occupancy.line_of_sight(sensor_x, sensor_y, x, y))
+    return _whole(sees, sensor_x, sensor_y, half_width)
+
+
+def detector_coverage(occupancy: OccupancyMap, pose: Pose, fov_deg: float,
+                      max_range: float, half_width: float = 0.0) -> InView:
+    """in_view(x, y) of one semantic detector frame taken from pose (the
+    detector looks along its x axis): within max_range, inside the
+    horizontal field of view and a line of sight through the static map,
+    as the simulated detector decides visibility (detector_model); with
+    half_width for the whole footprint, as in lidar_coverage."""
+    sensor_x, sensor_y, yaw = pose
+    half_fov = math.radians(fov_deg) / 2
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+
+    def sees(x, y):
+        dx, dy = x - sensor_x, y - sensor_y
+        bearing = math.atan2(cos_yaw * dy - sin_yaw * dx, cos_yaw * dx + sin_yaw * dy)
+        return (math.hypot(dx, dy) <= max_range and abs(bearing) <= half_fov
+                and occupancy.line_of_sight(sensor_x, sensor_y, x, y))
+    return _whole(sees, sensor_x, sensor_y, half_width)
+
+
+def _whole(sees, sensor_x, sensor_y, half_width):
+    """in_view: sees() the point and, for half_width > 0, the two sides of
+    a footprint that wide across the line of sight from the sensor."""
+    def in_view(x, y):
+        dx, dy = x - sensor_x, y - sensor_y
+        distance = math.hypot(dx, dy)
+        if half_width <= 0 or distance == 0:
+            return sees(x, y)
+        side_x, side_y = -dy * half_width / distance, dx * half_width / distance
+        return sees(x, y) and sees(x + side_x, y + side_y) and sees(x - side_x, y - side_y)
     return in_view
+
+
+def any_view(views: Sequence[InView]) -> InView:
+    """in_view of several frames of one sensor folded into one update."""
+    return lambda x, y: any(view(x, y) for view in views)
 
 
 def occupancy_from_grid(grid) -> OccupancyMap:

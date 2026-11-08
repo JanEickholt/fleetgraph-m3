@@ -1,6 +1,7 @@
 """Perception glue (fleetgraph_robot.perception, the generated regions and the
-SceneObservation conversion of perception_node). Pure except the message
-tests, which skip when the workspace is not built.
+sensor pose of perception_node; its SceneObservation conversion is
+scene_msgs, tests/unit/test_scene_msgs.py). Pure except the sensor pose test,
+which skips when the workspace is not built.
 """
 import importlib.util
 import math
@@ -14,10 +15,10 @@ import yaml
 
 from fleetgraph_robot.lidar_obstacles import OccupancyMap, obstacle_detections
 from fleetgraph_robot.perception import (
-    SEMANTIC_SOURCE, MapMatcher, coverage, localization_score, occupancy_from_grid,
-    semantic_detections, to_map)
+    SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
+    localization_score, map_correction, occupancy_from_grid, semantic_detections, to_map)
 from fleetgraph_robot.regions import load_regions
-from fleetgraph_robot.scene_graph import Category, Delta, Entity, Predicate, Relation
+from fleetgraph_robot.scene_graph import LIDAR_SOURCE, Category, Detection, LocalSceneGraph
 
 import test_lidar_obstacles as lidar_tests                 # lab world, raycast
 
@@ -83,6 +84,41 @@ def test_to_map_rotates_then_translates():
     assert (x, y) == pytest.approx((1.5, 4.0))
 
 
+def test_compose_chains_frames():
+    assert compose((2.0, 3.0, math.pi / 2), (1.0, 0.5, 0.25)) == \
+        pytest.approx((1.5, 4.0, math.pi / 2 + 0.25))
+    assert compose((0.0, 0.0, 0.0), (1.0, 2.0, 0.5)) == (1.0, 2.0, 0.5)
+
+
+def test_map_correction_maps_the_observed_pose_onto_the_corrected_one():
+    for observed, corrected in (((6.0, 1.2, 0.1), (6.08, 1.13, 0.14)),
+                                ((-0.5, 2.0, 3.0), (-0.45, 2.1, 2.95)),
+                                ((1.0, 1.0, 0.0), (1.0, 1.0, 0.0))):
+        assert compose(map_correction(observed, corrected), observed) == \
+            pytest.approx(corrected)
+
+
+# AMCL's error lives in map -> odom: a map-frame transform applied to every
+# TF pose. The lidar sits 0.1 m ahead of base_footprint, the detections'
+# frame (fleetgraph_sim robot.urdf.xacro).
+LIDAR_IN_BASE = (0.1, 0.0, 0.0)
+
+
+def test_the_lidar_correction_moves_detections_onto_the_truth():
+    base = (4.5, 1.4, -0.3)                                 # true base_footprint pose
+    error = (0.12, -0.09, math.radians(3.0))                # AMCL map -> odom error
+    amcl_lidar = compose(error, compose(base, LIDAR_IN_BASE))
+    amcl_base = compose(error, base)
+    correction = map_correction(amcl_lidar, compose(base, LIDAR_IN_BASE))  # perfect match
+    assert compose(correction, amcl_base) == pytest.approx(base)
+    seen = [detected('PERSON', 4.0, 1.0)]                   # 4.1 m ahead, left of the robot
+    truth = to_map(base, 4.0, 1.0)
+    (placed,) = semantic_detections(seen, compose(correction, amcl_base), stamp=3.0)
+    (uncorrected,) = semantic_detections(seen, amcl_base, stamp=3.0)
+    assert (placed.x, placed.y) == pytest.approx(truth)
+    assert math.dist((uncorrected.x, uncorrected.y), truth) > 0.25
+
+
 # Room x 0..4, y 0..2 at 0.1 m with a wall column at x = 2.0..2.1 from y = 0
 # to 1.5; walls are occupied cells (100), the rest free (0).
 def room():
@@ -92,15 +128,44 @@ def room():
     return OccupancyMap(resolution, 0.0, 0.0, width, height, data)
 
 
-def test_coverage_needs_range_and_static_line_of_sight():
-    in_view = coverage(room(), 0.5, 0.5, max_range=3.0)
+def test_lidar_coverage_needs_range_and_static_line_of_sight():
+    in_view = lidar_coverage(room(), 0.5, 0.5, max_range=3.0)
     assert in_view(1.5, 1.0)
     assert not in_view(3.0, 0.5)                    # behind the wall column
     assert in_view(2.5, 1.95)                       # over the top of the column
     assert not in_view(0.5, 3.51) and not in_view(3.9, 1.95)      # out of range
     assert not in_view(-0.5, 0.5)                   # off the map: no line of sight
-    assert coverage(room(), 0.5, 0.5, max_range=1.0)(1.2, 1.2)
-    assert not coverage(room(), 0.5, 0.5, max_range=1.0)(1.3, 1.3)
+    assert lidar_coverage(room(), 0.5, 0.5, max_range=1.0)(1.2, 1.2)
+    assert not lidar_coverage(room(), 0.5, 0.5, max_range=1.0)(1.3, 1.3)
+
+
+def test_detector_coverage_needs_field_of_view_range_and_static_line_of_sight():
+    in_view = detector_coverage(room(), (0.5, 0.5, 0.0), fov_deg=120.0, max_range=3.0)
+    assert in_view(1.5, 0.5) and in_view(1.0, 1.3)          # ahead; 58 deg to the left
+    assert not in_view(0.6, 1.9) and not in_view(0.0, 0.5)  # 86 deg to the left; behind
+    assert not in_view(3.0, 0.5)                            # behind the wall column
+    assert detector_coverage(room(), (0.5, 0.5, 0.0), 120.0, max_range=1.0)(1.2, 1.2)
+    assert not detector_coverage(room(), (0.5, 0.5, 0.0), 120.0, max_range=1.0)(1.3, 1.3)
+    facing_up = detector_coverage(room(), (0.5, 0.5, math.pi / 2), 120.0, 3.0)
+    assert facing_up(0.6, 1.9) and not facing_up(1.5, 0.5)
+
+
+def test_any_view_covers_what_one_of_the_frames_covers():
+    both = any_view([lambda x, y: x < 0.0, lambda x, y: x > 1.0])
+    assert both(-1.0, 0.0) and both(2.0, 0.0) and not both(0.5, 0.0)
+    assert not any_view([])(0.0, 0.0)
+
+
+def test_coverage_with_a_half_width_needs_both_sides_of_the_footprint_in_sight():
+    # just over the top of the wall column: the centre is in sight, the lower
+    # side 0.2 m across the line of sight is behind the column
+    assert lidar_coverage(room(), 0.5, 1.55, 4.0)(3.5, 1.55)
+    assert not lidar_coverage(room(), 0.5, 1.55, 4.0, half_width=0.2)(3.5, 1.55)
+    assert lidar_coverage(room(), 0.5, 1.55, 4.0, half_width=0.2)(1.5, 1.0)    # open floor
+    looking = (0.5, 1.55, 0.0)
+    assert detector_coverage(room(), looking, 120.0, 4.0)(3.5, 1.55)
+    assert not detector_coverage(room(), looking, 120.0, 4.0, half_width=0.2)(3.5, 1.55)
+    assert detector_coverage(room(), looking, 120.0, 4.0, half_width=0.2)(1.5, 1.0)
 
 
 def grid(origin_yaw=0.0):
@@ -195,6 +260,66 @@ def test_corrected_pose_leaves_only_the_crate(lab):
     assert math.hypot(crate.x - 2.5, crate.y - 0.8) < 0.15
 
 
+def test_scan_match_correction_places_detections_within_the_match_accuracy(lab):
+    """MapMatcher on the lab world corrects the detector pose with the
+    lidar's: a person 3 m ahead of the robot lands within the match error
+    (0.06 m, 1.25 deg -> 0.06 + 3 * tan(1.25 deg) = 0.13 m)."""
+    _, boxes, matcher, limits, raycast = lab
+
+    def error(detector_pose, truth):
+        (person,) = semantic_detections([detected('PERSON', 3.0, 0.0)], detector_pose, 0.0)
+        return math.dist((person.x, person.y), truth)
+
+    corrected, uncorrected = [], []
+    for lidar_truth in ROUTE:
+        base = compose(lidar_truth, (-LIDAR_IN_BASE[0], 0.0, 0.0))
+        truth = to_map(base, 3.0, 0.0)
+        angle_min, increment, ranges = raycast(lidar_truth, boxes)
+        for dx, dy, dyaw in POSE_ERRORS:
+            amcl_lidar = shifted(lidar_truth, dx, dy, dyaw)
+            amcl_base = compose(map_correction(lidar_truth, amcl_lidar), base)
+            refined = matcher.refine(ranges, angle_min, increment, *limits, amcl_lidar)
+            corrected.append(error(compose(map_correction(amcl_lidar, refined), amcl_base), truth))
+            uncorrected.append(error(amcl_base, truth))
+    print(f'\nperson 3 m ahead: worst {max(corrected):.3f} m corrected, '
+          f'{max(uncorrected):.3f} m uncorrected')
+    assert max(corrected) <= 0.13
+    assert max(uncorrected) > 2 * max(corrected)
+
+
+# Where robot_1 parks in lab_1 the door's south jamb hides the crate but for a
+# sliver, and the lidar-only track's centre estimate had drifted 0.19 m toward
+# that visible corner (replayed from a weekly_perception_crate run, 2026-11-08).
+PARKED_IN_LAB_1 = (5.85, 1.3, 0.0)
+DRIFTED_CRATE = (2.64, 0.93)
+
+
+def test_crate_seen_past_the_door_frame_is_no_miss(lab):
+    occupancy, boxes, _, limits, raycast = lab
+    angle_min, increment, ranges = raycast(PARKED_IN_LAB_1, boxes)
+    x, y, _ = PARKED_IN_LAB_1
+    assert obstacle_detections(ranges, angle_min, increment, limits[0], 4.0, PARKED_IN_LAB_1,
+                               occupancy, stamp=0.0, tolerance=0.2) == []
+    centre_only = lidar_coverage(occupancy, x, y, 4.0)
+    whole = lidar_coverage(occupancy, x, y, 4.0, half_width=0.2)
+    assert centre_only(*DRIFTED_CRATE) and not whole(*DRIFTED_CRATE)
+    from_the_hall = lidar_coverage(occupancy, 1.0, 0.0, 4.0, half_width=0.2)
+    assert from_the_hall(*DRIFTED_CRATE) and from_the_hall(2.5, 0.8)   # all of it in sight
+
+    def crate_after_ten_scans(coverage):
+        graph = LocalSceneGraph('robot_1', [])
+        seen = Detection(Category.OBSTACLE, *DRIFTED_CRATE, size=(0.2, 0.2, 0.0),
+                         confidence=0.75, label='unknown', source=LIDAR_SOURCE)
+        for scan in range(5):
+            graph.integrate([seen], scan * 0.1, {LIDAR_SOURCE: from_the_hall})
+        for scan in range(5, 15):                       # parked: the sliver gives no cluster
+            graph.integrate([], scan * 0.1, {LIDAR_SOURCE: coverage})
+        return graph.entities()
+
+    assert len(crate_after_ten_scans(whole)) == 1
+    assert crate_after_ten_scans(centre_only) == []     # removed after 0.7 s, crate still there
+
+
 def test_map_matcher_is_fast_enough_for_10_hz_scans(lab):
     _, boxes, matcher, limits, raycast = lab
     angle_min, increment, ranges = raycast(ROUTE[2], boxes)
@@ -247,27 +372,13 @@ def test_localization_score_matches_the_agent_heuristic():
     assert localization_score(covariance) == pytest.approx(1.0 / (1.0 + math.sqrt(0.03125) / 0.25))
 
 
-# ----------------------------------------------------- message conversion
+# ------------------------------------------------------------ sensor pose
 
-def test_time_msg_rounds_sim_seconds_to_nanoseconds():
-    pytest.importorskip('fleetgraph_interfaces.msg')
-    from fleetgraph_robot.perception_node import time_msg
-    assert (time_msg(12.3456789).sec, time_msg(12.3456789).nanosec) == (12, 345678900)
-    assert (time_msg(1.9999999999).sec, time_msg(1.9999999999).nanosec) == (2, 0)
-
-
-def test_observation_msg_carries_the_delta():
+def test_pose_stamped_is_the_child_frame_pose_of_a_transform():
     pytest.importorskip('fleetgraph_interfaces.msg')
     from geometry_msgs.msg import TransformStamped
-    from fleetgraph_robot.perception_node import observation_msg, pose_stamped
+    from fleetgraph_robot.perception_node import pose_stamped
 
-    crate = Entity('robot_1/obstacle/4', Category.OBSTACLE, 'unknown', 2.5, 0.8, z=0.1,
-                   size=(0.5, 0.5, 0.0), vx=0.01, vy=-0.02, confidence=0.875,
-                   first_seen=20.25, last_seen=31.5, attributes={'source': 'lidar'})
-    group = Entity('robot_1/group/9', Category.GROUP, 'group', 1.0, 1.0,
-                   member_ids=['robot_1/person/7', 'robot_1/person/8'])
-    delta = Delta([crate, group], ['robot_1/person/3'],
-                  [Relation(crate.id, Predicate.INSIDE, 'hall', 0.875)])
     transform = TransformStamped()
     transform.header.frame_id = 'map'
     transform.header.stamp.sec, transform.header.stamp.nanosec = 31, 500000000
@@ -275,24 +386,5 @@ def test_observation_msg_carries_the_delta():
     transform.transform.rotation.z, transform.transform.rotation.w = 0.6, 0.8
     sensor_pose = pose_stamped(transform)
     assert (sensor_pose.header.frame_id, sensor_pose.header.stamp.sec) == ('map', 31)
-    assert (sensor_pose.pose.position.x, sensor_pose.pose.orientation.z) == (1.0, 0.6)
-
-    msg = observation_msg(delta, 'robot_1', 'map', sensor_pose, confidence=0.9)
-    assert (msg.robot_id, msg.frame_id, msg.sensor_pose) == ('robot_1', 'map', sensor_pose)
-    assert msg.confidence == pytest.approx(0.9)
-    assert list(msg.removed_entity_ids) == ['robot_1/person/3']
-    first, second = msg.entities
-    assert (first.id, first.category, first.label) == (crate.id, Category.OBSTACLE, 'unknown')
-    assert (first.position.x, first.position.y, first.position.z) == (2.5, 0.8, 0.1)
-    assert (first.size.x, first.size.y, first.size.z) == (0.5, 0.5, 0.0)
-    assert (first.velocity.x, first.velocity.y, first.velocity.z) == (0.01, -0.02, 0.0)
-    assert first.confidence == pytest.approx(0.875)
-    assert (first.first_seen.sec, first.first_seen.nanosec) == (20, 250000000)
-    assert (first.last_seen.sec, first.last_seen.nanosec) == (31, 500000000)
-    assert [(pair.key, pair.value) for pair in first.attributes] == [('source', 'lidar')]
-    assert list(first.source_ids) == [] and list(first.member_ids) == []
-    assert list(second.member_ids) == group.member_ids
-    (relation,) = msg.relations
-    assert (relation.subject_id, relation.predicate, relation.object_id) == \
-        (crate.id, Predicate.INSIDE, 'hall')
-    assert relation.confidence == pytest.approx(0.875)
+    assert (sensor_pose.pose.position.x, sensor_pose.pose.position.y) == (1.0, 0.5)
+    assert (sensor_pose.pose.orientation.z, sensor_pose.pose.orientation.w) == (0.6, 0.8)

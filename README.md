@@ -95,15 +95,30 @@ $R ros2 run fleetgraph_robot perception --ros-args -r __ns:=/robot_1 -p robot_id
   0.14 m and 3° off while driving) is corrected by a small scan match against the static
   map (`perception.MapMatcher`, ±0.25 m, ±5°); otherwise wall returns land in free cells.
   Lidar evidence counts within `obstacle_range` (4.0 m), farther than `map_tolerance`
-  (0.2 m) from mapped cells. Detections are placed with TF at their own stamp. A track
-  decays only where the scan could see it (within `obstacle_range`, static line of sight).
+  (0.2 m) from mapped cells. Detections are placed with TF at their own stamp plus the
+  MapMatcher correction of the scan they join (the first at or after their stamp), since
+  both poses go through AMCL's map → odom; each detection message is one detector frame,
+  folded into that scan's update.
+- Coverage is per sensor: a track decays (confidence × 0.7) only on a frame of a sensor
+  that has detected it before and could see it then. Scan: within `obstacle_range`, static
+  line of sight. Detector frame (also an empty one): within `detector_range` (6 m) and
+  `detector_fov_deg` (120°) around the x axis of its `frame_id` at that frame's stamp,
+  static line of sight. So a person only the camera sees does not decay between camera
+  frames, and a lidar-only obstacle does not decay on camera frames. Both need the whole
+  footprint in view: the track and both sides `coverage_half_width` (0.2 m) across the
+  line of sight. A track the map hides in part is no miss (the crate seen past the lab_1
+  door frame gave 2 returns, too few for a cluster, while its centre was in sight).
 - Published at `publish_rate_hz` (2.0) when the delta has entities, removals or a changed
   relation set, otherwise at least every `heartbeat_sec` (5.0); nothing before the first
   integrated scan. Region nodes come in the first message only. `confidence` is the AMCL
   localization score (as in RobotState), 1.0 before the first `amcl_pose`.
 - Latency = `meta.stamp - sensor_pose.header.stamp` (sim s): the age of the newest scan in
-  an observation when it is published. `weekly_perception_crate` asserts < 0.5 s; the node
-  logs mean and max every 10 s.
+  an observation when it is published. `weekly_perception_crate` and
+  `weekly_perception_scenes` assert < 0.5 s; the node logs mean and max every 10 s.
+- End to end: `weekly_perception_crate` (robot_1 past the unmapped crate) and
+  `weekly_perception_scenes` (three robots, scene `group_hall_person_lab1`: persons, the
+  group, a visitor INSIDE lab_1 and its removal, obstacles only where something unmapped
+  stands, gap-free deltas per robot).
 - Other parameters: `regions_file`, `map_frame` (map), `base_frame` (base_footprint),
   `tf_timeout_sec` (0.5: a scan whose TF is later than that is dropped).
 
