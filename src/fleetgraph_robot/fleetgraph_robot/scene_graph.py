@@ -12,20 +12,24 @@ Per frame, detections associate greedily, nearest first, within a
 per-category gate: semantic detections with tracks of their own category,
 then with range-only (lidar) tracks, which they re-identify under a new id;
 lidar clusters with the nearest track of any physical category, or they
-vanish as the echo of a semantic detection. Unmatched tracks decay only
-where the sensors looked. Tracks that converge within merge_radius merge
-into the older id; a range-only track yields to one of another category.
-Confidence: hit c += gain * score * (1 - c); miss in view c *= miss_decay.
+vanish as the echo of a semantic detection. Coverage is per sensor (the
+detection source): an unmatched track decays only on a frame of a sensor
+that has detected it before and looked where it is, so a camera-only
+person is no miss for a lidar scan and a lidar-only obstacle none for a
+camera frame. Tracks that converge within merge_radius merge into the older
+id; a range-only track yields to one of another category.
+Confidence: hit c += gain * score * (1 - c); miss c *= miss_decay.
 Tracks below report_min_confidence are kept but not reported.
 """
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
 from enum import IntEnum
 
 from fleetgraph_robot.regions import Region
 
 LIDAR_SOURCE = 'lidar'
+InView = Callable[[float, float], bool]     # (x, y) in the map frame: did the frame cover it
 
 
 class Category(IntEnum):
@@ -181,6 +185,7 @@ class LocalSceneGraph:
                 raise ValueError(f'duplicate region id {region.id!r}')
             self._region_nodes[region.id] = _region_node(region)
         self._tracks: dict[str, Entity] = {}    # physical entities
+        self._sensors: dict[str, set[str]] = {}  # track id -> sources that detected it
         self._groups: dict[str, Entity] = {}
         self._serial: dict[str, int] = {}       # creation order of live ids
         self._next_serial = 1
@@ -257,11 +262,18 @@ class LocalSceneGraph:
     # ---- update
 
     def integrate(self, detections: Iterable[Detection], now: float,
-                  in_view: Callable[[float, float], bool] | None = None) -> None:
-        """in_view(x, y): whether this frame's sensors covered that point, so
-        an unmatched track there was missed. None: no track decays."""
+                  coverage: Mapping[str, InView] | InView | None = None) -> None:
+        """coverage: per sensor (Detection.source) with a frame in this
+        update, also an empty one, in_view(x, y): whether that frame covered
+        the point. A track nothing re-observed here decays once if one of
+        these sensors has detected it before and covered it. A plain
+        in_view covers for every sensor (a single-sensor caller). None: no
+        track decays."""
         if not math.isfinite(now):
             raise ValueError(f'now must be finite, got {now!r}')
+        if not (coverage is None or callable(coverage) or isinstance(coverage, Mapping)):
+            raise TypeError(f'coverage must be in_view(x, y) or map sensor names to one, '
+                            f'got {coverage!r}')
         detections = list(detections)
         for detection in detections:
             _validate(detection)
@@ -299,6 +311,7 @@ class LocalSceneGraph:
                 continue
             if entity.id in observed:
                 echoes.add(i)
+                self._sensors[entity.id].add(LIDAR_SOURCE)     # seen; hit counted once
             elif entity.id not in taken:
                 reinforced[i] = entity
                 taken.add(entity.id)
@@ -308,9 +321,9 @@ class LocalSceneGraph:
             elif i not in echoes:
                 self._create(frame[i], now)
 
-        if in_view is not None:
+        if coverage:
             for entity in self._tracks.values():
-                if entity.id not in self._frame_hits and in_view(entity.x, entity.y):
+                if entity.id not in self._frame_hits and self._missed(entity, coverage):
                     entity.confidence *= params.miss_decay
         for entity in list(self._tracks.values()):
             if (entity.confidence < params.remove_below
@@ -319,6 +332,15 @@ class LocalSceneGraph:
         self._merge_converged()
         self._update_groups(now)
         self._hit_ids |= self._frame_hits
+
+    def _missed(self, entity, coverage):
+        """A sensor of this update that has detected the track before
+        looked where it is (and did not see it)."""
+        if callable(coverage):
+            return coverage(entity.x, entity.y)
+        seen_by = self._sensors[entity.id]
+        return any(sensor in seen_by and in_view(entity.x, entity.y)
+                   for sensor, in_view in coverage.items())
 
     def _collapse(self, detections):
         """Same-frame duplicates: a detection closer than merge_radius to a
@@ -392,16 +414,19 @@ class LocalSceneGraph:
         entity.confidence += params.confidence_gain * detection.confidence * (1 - entity.confidence)
         entity.last_seen = now
         entity.hits += 1
+        self._sensors[entity.id].add(detection.source)
         self._frame_hits.add(entity.id)
 
     def _upgrade(self, track, detection, now):
         """A semantic detection names a range-only obstacle: the entity lives
         on under a new id, since ids encode the category."""
+        sensors = self._sensors[track.id]
         self._delete(track.id)
         category = Category(detection.category)
         entity = replace(track, id=self._new_id(category), category=category,
                          attributes=dict(track.attributes))
         self._tracks[entity.id] = entity
+        self._sensors[entity.id] = sensors
         self._hit(entity, detection, now)
 
     def _create(self, detection, now):
@@ -412,6 +437,7 @@ class LocalSceneGraph:
                         first_seen=now, last_seen=now, hits=1,
                         attributes={'source': detection.source} if detection.source else {})
         self._tracks[entity.id] = entity
+        self._sensors[entity.id] = {detection.source}
         self._frame_hits.add(entity.id)
 
     def _new_id(self, category):
@@ -422,6 +448,7 @@ class LocalSceneGraph:
 
     def _delete(self, entity_id):
         self._tracks.pop(entity_id, None)
+        self._sensors.pop(entity_id, None)
         self._groups.pop(entity_id, None)
         del self._serial[entity_id]
         if self._reported.pop(entity_id, None) is not None:
@@ -465,6 +492,7 @@ class LocalSceneGraph:
         survivor.first_seen = min(survivor.first_seen, absorbed.first_seen)
         survivor.confidence = max(survivor.confidence, absorbed.confidence)
         survivor.hits += absorbed.hits
+        self._sensors[survivor.id] |= self._sensors[absorbed.id]
         self._frame_hits.add(survivor.id)
         self._delete(absorbed.id)
 

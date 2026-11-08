@@ -1,7 +1,7 @@
 """Local scene graph (fleetgraph_robot.scene_graph). Pure — no rclpy, no sim.
 Covers track ids, association and duplicate handling, confidence and
-removal, lidar -> semantic re-identification, groups, relations, delta
-semantics and the per-frame time budget.
+removal, per-sensor coverage, lidar -> semantic re-identification, groups,
+relations, delta semantics and the per-frame time budget.
 """
 import copy
 import math
@@ -232,6 +232,108 @@ def test_without_in_view_unmatched_entities_do_not_decay():
     (entity,) = tracked(graph)
     graph.integrate([], 1.0)
     assert graph.get(entity.id).confidence == entity.confidence
+
+
+# --------------------------------------------------- per-sensor coverage
+# As in perception_node: one update per 10 Hz lidar scan, every other one
+# also carrying a 5 Hz detector frame.
+SCAN = {'lidar': IN_VIEW}
+SCAN_AND_FRAME = {'lidar': IN_VIEW, 'detector': IN_VIEW}
+
+
+def scans(graph, count, seen=(), start=0.0, frame_view=IN_VIEW):
+    """count updates 0.1 s apart from start; even ones carry a detector
+    frame (covering frame_view) with the `seen` detections."""
+    for index in range(count):
+        frame = index % 2 == 0
+        coverage = {'lidar': IN_VIEW, 'detector': frame_view} if frame else SCAN
+        graph.integrate(list(seen) if frame else [], start + index * 0.1, coverage)
+        yield index, frame
+
+
+def test_camera_only_track_between_lidar_scans_stays_reported():
+    """The flicker: scans counted as misses for tracks the lidar does not
+    see, which pulled a person at the detector's nominal confidence (0.85)
+    below report_min_confidence after every scan between two frames."""
+    graph = make_graph()
+    visitor, deltas = None, []
+    for index, _ in scans(graph, 40, seen=[person(2.0, 0.0, confidence=0.85)]):
+        if index >= 2:                      # reported from the second frame on
+            (visitor,) = tracked(graph)
+            assert visitor.confidence >= 0.5
+        if index % 5 == 4:                  # take_delta at the 2 Hz publish rate
+            deltas.append(graph.take_delta())
+    assert all(visitor.id in {entity.id for entity in delta.entities}
+               and (visitor.id, Predicate.INSIDE, 'hall') in
+               {(relation.subject_id, relation.predicate, relation.object_id)
+                for relation in delta.relations}
+               and not delta.removed_ids for delta in deltas)
+
+
+def test_unseen_camera_track_decays_only_on_detector_frames():
+    graph = make_graph(miss_decay=0.7)
+    list(scans(graph, 6, seen=[person(2.0, 0.0)]))
+    (entity,) = tracked(graph)
+    confidence = entity.confidence
+    for _, frame in scans(graph, 6, start=0.6):     # gone: empty frames still look there
+        confidence *= 0.7 if frame else 1.0
+        assert graph.get(entity.id).confidence == pytest.approx(confidence)
+
+
+def test_camera_track_outside_the_detector_view_keeps_its_confidence():
+    graph = make_graph(miss_decay=0.7)
+    list(scans(graph, 6, seen=[person(2.0, 0.0)]))
+    (entity,) = tracked(graph)
+    list(scans(graph, 10, start=0.6, frame_view=lambda x, y: x > 3.0))    # turned away
+    assert graph.get(entity.id).confidence == entity.confidence
+    graph.integrate([], 1.6, {'detector': lambda x, y: x < 3.0})          # back in view
+    assert graph.get(entity.id).confidence == pytest.approx(entity.confidence * 0.7)
+
+
+def test_lidar_backed_tracks_decay_on_every_scan_as_before():
+    graph = make_graph(miss_decay=0.7)
+    graph.integrate([lidar(2.5, 0.8)], 0.0, SCAN)
+    graph.integrate([lidar(2.5, 0.8), person(1.0, -2.0)], 0.1, SCAN_AND_FRAME)
+    graph.integrate([lidar(2.5, 0.8), lidar(1.1, -2.0)], 0.2, SCAN)    # the person, too
+    (obstacle,) = tracked(graph, Category.OBSTACLE, include_tentative=True)
+    (walker,) = tracked(graph, Category.PERSON, include_tentative=True)
+    expected = {obstacle.id: obstacle.confidence, walker.id: walker.confidence}
+    for now, coverage in ((0.3, SCAN), (0.4, SCAN_AND_FRAME), (0.5, SCAN)):
+        graph.integrate([], now, coverage)              # one miss per update, not per sensor
+        expected = {entity_id: value * 0.7 for entity_id, value in expected.items()}
+        assert {entity_id: graph.get(entity_id).confidence for entity_id in expected} == \
+            pytest.approx(expected)
+    graph.integrate([], 0.6, {'detector': IN_VIEW})  # the detector never saw the obstacle
+    assert graph.get(obstacle.id).confidence == pytest.approx(expected[obstacle.id])
+    assert graph.get(walker.id).confidence == pytest.approx(expected[walker.id] * 0.7)
+
+
+def test_upgrades_merges_and_echoes_keep_the_lidar_evidence():
+    upgraded = make_graph(miss_decay=0.7)
+    feed(upgraded, [[lidar(2.5, 0.8)]] * 2 + [[person(2.55, 0.8)]])
+    echoed = make_graph(miss_decay=0.7, merge_radius=0.3)
+    feed(echoed, [[person(2.0, 0.0), lidar(2.4, 0.0)]] * 3)
+    merged = make_graph(position_smoothing=0.0, merge_radius=0.3, miss_decay=0.7)
+    feed(merged, [[lidar(2.0, 0.7)]] * 3)
+    feed(merged, [[person(2.0, 0.0)]] * 3, start=0.6)
+    for step, y in enumerate((0.45, 0.25)):
+        merged.integrate([lidar(2.0, y)], 1.2 + step * DT)
+    for graph in (upgraded, echoed, merged):
+        (entity,) = tracked(graph, include_tentative=True)
+        assert entity.category == Category.PERSON
+        graph.integrate([], 2.0, SCAN)                  # a scan that misses it
+        assert graph.get(entity.id).confidence == pytest.approx(entity.confidence * 0.7)
+
+
+def test_a_plain_in_view_covers_for_every_sensor():
+    graph = make_graph(miss_decay=0.7)
+    graph.integrate([lidar(2.5, 0.8), person(1.0, -2.0)], 0.0)
+    before = {entity.id: entity.confidence for entity in tracked(graph, include_tentative=True)}
+    graph.integrate([], 0.1, IN_VIEW)
+    assert {entity_id: graph.get(entity_id).confidence for entity_id in before} == \
+        pytest.approx({entity_id: value * 0.7 for entity_id, value in before.items()})
+    with pytest.raises(TypeError, match='coverage'):
+        graph.integrate([], 0.2, [IN_VIEW])
 
 
 # -------------------------------------------------------- lidar evidence

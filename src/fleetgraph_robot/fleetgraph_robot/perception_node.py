@@ -14,10 +14,12 @@ ground truth.
 Per scan: the lidar's map pose at the scan stamp (TF, corrected against the
 static map by MapMatcher), lidar obstacles against the static map plus the
 semantic detections sensed up to that stamp (each placed with TF at its own
-stamp), and one LocalSceneGraph.integrate() with the scan's coverage. At
-publish_rate_hz the delta goes out when it holds anything (entities,
-removals, a changed relation set), otherwise at least every heartbeat_sec.
-Nothing is published before the first integrated scan.
+stamp), and one LocalSceneGraph.integrate() with per-sensor coverage: the
+scan's, and the detector's from each detection frame folded in (at that
+frame's stamp), so a track decays only on frames of sensors that saw it
+before. At publish_rate_hz the delta goes out when it holds anything
+(entities, removals, a changed relation set), otherwise at least every
+heartbeat_sec. Nothing is published before the first integrated scan.
 
 Latency = meta.stamp - sensor_pose.header.stamp: how old the newest scan in
 a published observation is (sim seconds).
@@ -43,9 +45,10 @@ from fleetgraph_interfaces.msg import SceneEntity, SceneObservation, SceneRelati
 from fleetgraph_robot import contract
 from fleetgraph_robot.lidar_obstacles import obstacle_detections
 from fleetgraph_robot.perception import (
-    MapMatcher, coverage, localization_score, occupancy_from_grid, semantic_detections)
+    SEMANTIC_SOURCE, MapMatcher, any_view, detector_coverage, lidar_coverage,
+    localization_score, occupancy_from_grid, semantic_detections)
 from fleetgraph_robot.regions import load_regions
-from fleetgraph_robot.scene_graph import LocalSceneGraph
+from fleetgraph_robot.scene_graph import LIDAR_SOURCE, LocalSceneGraph
 
 # The TF of a scan (odom -> base_footprint at 30 Hz) arrives up to ~40 ms of
 # sim time after the scan (measured 2026-11-08): pending scans are retried at
@@ -130,6 +133,11 @@ class Perception(Node):
             # of a mapped cell count as the map.
             ('obstacle_range', 4.0),
             ('map_tolerance', 0.2),
+            # Field of view (deg) and range (m) of the semantic detector,
+            # looking along the x axis of the detections' frame_id; defaults:
+            # the simulated detector (fleetgraph_sim_tools DetectorParams).
+            ('detector_fov_deg', 120.0),
+            ('detector_range', 6.0),
         ])
         self.params = {parameter.name: parameter.value for parameter in declared}
         self.robot_id = self.params['robot_id']
@@ -237,15 +245,18 @@ class Perception(Node):
         detections = obstacle_detections(
             scan.ranges, scan.angle_min, scan.angle_increment, scan.range_min, range_max,
             lidar, self._occupancy, stamp=now, tolerance=self.params['map_tolerance'])
-        detections += self._semantic_until(stamp)
-        self.graph.integrate(detections, now,
-                             coverage(self._occupancy, lidar[0], lidar[1], range_max))
+        coverage = {LIDAR_SOURCE: lidar_coverage(self._occupancy, lidar[0], lidar[1], range_max)}
+        semantic, views = self._semantic_until(stamp)
+        if views:
+            coverage[SEMANTIC_SOURCE] = any_view(views)
+        self.graph.integrate(detections + semantic, now, coverage)
         self._sensor_pose = pose_stamped(base)
         self._counts['scans'] += 1
 
     def _semantic_until(self, stamp):
-        """Map-frame detections of the messages sensed up to stamp."""
-        detections = []
+        """Map-frame detections of the messages sensed up to stamp, and the
+        coverage of each of those frames (also of empty ones)."""
+        detections, views = [], []
         while self._detections and self._detections[0][0] <= stamp:
             sensed, frame_id, entities = self._detections.popleft()
             try:
@@ -260,7 +271,9 @@ class Perception(Node):
             self._counts['detections'] += len(placed)
             self._counts['detections_dropped'] += len(entities) - len(placed)
             detections += placed
-        return detections
+            views.append(detector_coverage(self._occupancy, pose, self.params['detector_fov_deg'],
+                                           self.params['detector_range']))
+        return detections, views
 
     # ------------------------------------------------------------- output
     def _publish(self):

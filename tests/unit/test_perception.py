@@ -14,8 +14,8 @@ import yaml
 
 from fleetgraph_robot.lidar_obstacles import OccupancyMap, obstacle_detections
 from fleetgraph_robot.perception import (
-    SEMANTIC_SOURCE, MapMatcher, coverage, localization_score, occupancy_from_grid,
-    semantic_detections, to_map)
+    SEMANTIC_SOURCE, MapMatcher, any_view, detector_coverage, lidar_coverage,
+    localization_score, occupancy_from_grid, semantic_detections, to_map)
 from fleetgraph_robot.regions import load_regions
 from fleetgraph_robot.scene_graph import Category, Delta, Entity, Predicate, Relation
 
@@ -92,15 +92,32 @@ def room():
     return OccupancyMap(resolution, 0.0, 0.0, width, height, data)
 
 
-def test_coverage_needs_range_and_static_line_of_sight():
-    in_view = coverage(room(), 0.5, 0.5, max_range=3.0)
+def test_lidar_coverage_needs_range_and_static_line_of_sight():
+    in_view = lidar_coverage(room(), 0.5, 0.5, max_range=3.0)
     assert in_view(1.5, 1.0)
     assert not in_view(3.0, 0.5)                    # behind the wall column
     assert in_view(2.5, 1.95)                       # over the top of the column
     assert not in_view(0.5, 3.51) and not in_view(3.9, 1.95)      # out of range
     assert not in_view(-0.5, 0.5)                   # off the map: no line of sight
-    assert coverage(room(), 0.5, 0.5, max_range=1.0)(1.2, 1.2)
-    assert not coverage(room(), 0.5, 0.5, max_range=1.0)(1.3, 1.3)
+    assert lidar_coverage(room(), 0.5, 0.5, max_range=1.0)(1.2, 1.2)
+    assert not lidar_coverage(room(), 0.5, 0.5, max_range=1.0)(1.3, 1.3)
+
+
+def test_detector_coverage_needs_field_of_view_range_and_static_line_of_sight():
+    in_view = detector_coverage(room(), (0.5, 0.5, 0.0), fov_deg=120.0, max_range=3.0)
+    assert in_view(1.5, 0.5) and in_view(1.0, 1.3)          # ahead; 58 deg to the left
+    assert not in_view(0.6, 1.9) and not in_view(0.0, 0.5)  # 86 deg to the left; behind
+    assert not in_view(3.0, 0.5)                            # behind the wall column
+    assert detector_coverage(room(), (0.5, 0.5, 0.0), 120.0, max_range=1.0)(1.2, 1.2)
+    assert not detector_coverage(room(), (0.5, 0.5, 0.0), 120.0, max_range=1.0)(1.3, 1.3)
+    facing_up = detector_coverage(room(), (0.5, 0.5, math.pi / 2), 120.0, 3.0)
+    assert facing_up(0.6, 1.9) and not facing_up(1.5, 0.5)
+
+
+def test_any_view_covers_what_one_of_the_frames_covers():
+    both = any_view([lambda x, y: x < 0.0, lambda x, y: x > 1.0])
+    assert both(-1.0, 0.0) and both(2.0, 0.0) and not both(0.5, 0.0)
+    assert not any_view([])(0.0, 0.0)
 
 
 def grid(origin_yaw=0.0):

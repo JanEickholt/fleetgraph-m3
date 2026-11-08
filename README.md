@@ -93,8 +93,14 @@ $R ros2 run fleetgraph_robot perception --ros-args -r __ns:=/robot_1 -p robot_id
   0.14 m and 3° off while driving) is corrected by a small scan match against the static
   map (`perception.MapMatcher`, ±0.25 m, ±5°); otherwise wall returns land in free cells.
   Lidar evidence counts within `obstacle_range` (4.0 m), farther than `map_tolerance`
-  (0.2 m) from mapped cells. Detections are placed with TF at their own stamp. A track
-  decays only where the scan could see it (within `obstacle_range`, static line of sight).
+  (0.2 m) from mapped cells. Detections are placed with TF at their own stamp; each
+  detection message is one detector frame, folded into the next scan's update.
+- Coverage is per sensor: a track decays (confidence × 0.7) only on a frame of a sensor
+  that has detected it before and could see it then. Scan: within `obstacle_range`, static
+  line of sight. Detector frame (also an empty one): within `detector_range` (6 m) and
+  `detector_fov_deg` (120°) around the x axis of its `frame_id` at that frame's stamp,
+  static line of sight. So a person only the camera sees does not decay between camera
+  frames, and a lidar-only obstacle does not decay on camera frames.
 - Published at `publish_rate_hz` (2.0) when the delta has entities, removals or a changed
   relation set, otherwise at least every `heartbeat_sec` (5.0); nothing before the first
   integrated scan. Region nodes come in the first message only. `confidence` is the AMCL
