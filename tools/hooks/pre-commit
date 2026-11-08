@@ -3,7 +3,8 @@
 #   enable once per clone:   git config core.hooksPath tools/hooks
 #   bypass (emergency only): git commit --no-verify
 #
-# 1. generated files (world/map/locations, docs/contracts.json) match their source
+# 1. generators, their inputs and generated files (world/map/locations/regions,
+#    docs/contracts.json) are staged as a whole, and the outputs match the source
 # 2. this checkout's fleetgraph container runs AND bind-mounts THIS checkout (otherwise
 #    the tests would exercise another checkout's code: a false green)
 # 3. rebuild if build inputs changed, then ./t --fast (~25 s, no sim)
@@ -14,11 +15,29 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 
 staged=$(git diff --cached --name-only --diff-filter=ACMRD)
-code=$(printf '%s\n' "$staged" |
-       grep -E '^(src/|tests/|mock_data/|tools/|t$|compose\.yaml$|Dockerfile$)' || true)
+trigger='^(src/|tests/|mock_data/|tools/|t$|compose\.yaml$|Dockerfile$|docs/contracts\.json$)'
+code=$(printf '%s\n' "$staged" | grep -E "$trigger" || true)
 if [ -z "$code" ]; then
   echo "pre-commit: no code staged, tests skipped"
   exit 0
+fi
+
+# The generator checks read the working tree: with only tools/gen_world.py
+# staged after regenerating, they would pass and the commit would ship stale
+# generated files. So generators, their inputs and outputs go in whole.
+generated=(tools/gen_world.py src/fleetgraph_sim/worlds/lab_floor.sdf
+           src/fleetgraph_sim/maps/lab_floor.pgm src/fleetgraph_sim/maps/lab_floor.yaml
+           src/fleetgraph_sim/config/locations.yaml src/fleetgraph_sim/config/regions.yaml
+           tools/export_contracts.py src/fleetgraph_interfaces/msg
+           src/fleetgraph_interfaces/srv src/fleetgraph_interfaces/package.xml
+           docs/contracts.json)
+unstaged=$( (git diff --name-only -- "${generated[@]}"
+             git ls-files --others --exclude-standard -- "${generated[@]}") | sort -u)
+if [ -n "$unstaged" ]; then
+  echo "pre-commit: unstaged changes to generators, their inputs or outputs:" >&2
+  printf '%s\n' "$unstaged" | sed 's/^/  /' >&2
+  echo "  the generator checks read the working tree: stage (or stash) them" >&2
+  exit 1
 fi
 
 python3 -I tools/gen_world.py --check
