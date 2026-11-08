@@ -69,6 +69,9 @@ def test_an_inner_t_that_disagrees_is_rejected():
         validate(scenario({'t': 5, 'publish': dict(SPEC, t=2)}))
 
 
-@pytest.mark.parametrize('path', SCENARIOS, ids=[os.path.basename(path) for path in SCENARIOS])
-def test_shipped_scenarios_are_valid(path):
-    assert load(path)['name']
+def test_shipped_scenarios_are_valid():
+    # one test, not one per file: ids named after scenarios would join
+    # `./t -k <scenario>` selections; a ScenarioError names the file
+    assert SCENARIOS
+    for path in SCENARIOS:
+        load(path)
