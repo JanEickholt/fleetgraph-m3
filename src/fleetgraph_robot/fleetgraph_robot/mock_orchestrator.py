@@ -10,8 +10,10 @@ ASSIGNED) on /fleet/task_update, then a TaskAssignment to the task's robot
 names an `allocation` policy, else robot_1). Per robot it
 re-sends the assignment until that robot answers (ack timeout), queues by
 priority and assigns the next task once the robot reports a terminal
-state; robots work in parallel. Scripted
-TaskCommands (cancel) are sent at their time. All TaskUpdates are written
+state; robots work in parallel. A scripted
+cancel at its time sends a TaskCommand for an assigned task; a task still
+waiting or queued leaves its queue and the mock reports it CANCELLED
+(ERROR_CANCELLED_BY_OPERATOR) itself. All TaskUpdates are written
 to an optional JSONL event log; a metrics summary is logged at the end.
 Times in the script are sim seconds after the first /clock tick.
 
@@ -277,13 +279,42 @@ class MockOrchestrator(Node):
         self.get_logger().info(f'assigned {task.task_id} -> {robot_id}')
 
     def _send_command(self, command_entry):
+        """A scripted cancel. A task still waiting for a robot, or queued
+        behind another task, is still Module 1's: it leaves its queue and is
+        CANCELLED here. Only an assigned task is the robot's to cancel, so
+        only then does a TaskCommand go out."""
         task_id = command_entry['task_id']
-        robot_id = self.tasks.get(task_id, {}).get('robot_id', self.default_robot_id)
+        reason = command_entry.get('reason', 'operator cancel')
+        queued = self._unqueue(task_id)
+        if queued is not None:
+            record = self.tasks[task_id]
+            record.update(state=TaskUpdate.STATE_CANCELLED, done=self.now_sec(),
+                          error_code=TaskUpdate.ERROR_CANCELLED_BY_OPERATOR, reason=reason)
+            self._lifecycle(queued, TaskUpdate.STATE_CANCELLED,
+                            error_code=TaskUpdate.ERROR_CANCELLED_BY_OPERATOR, reason=reason)
+            self.get_logger().info(f'cancel {task_id}: CANCELLED before assignment')
+            return
+        robot_id = self.tasks.get(task_id, {}).get('robot_id', '')
+        if self._assigned_task(robot_id) != task_id:
+            state = self.tasks.get(task_id, {}).get('state')
+            self.get_logger().warn(f'cancel {task_id}: not assigned '
+                                   f'({STATE_NAMES.get(state, "unknown task")}), nothing to cancel')
+            return
         msg = TaskCommand(robot_id=robot_id, task_id=task_id,
-                          command=TaskCommand.COMMAND_CANCEL,
-                          reason=command_entry.get('reason', 'operator cancel'))
+                          command=TaskCommand.COMMAND_CANCEL, reason=reason)
         self.pub_command.publish(self.meta.stamp(msg, contract.TOPIC_TASK_COMMAND))
         self.get_logger().info(f'cancel {task_id} on {robot_id}')
+
+    def _unqueue(self, task_id):
+        """Remove the task from the waiting list or its robot's queue; the
+        TaskRequest, or None when it is in neither."""
+        for queue in (self.waiting, *self.queues.values()):
+            for task in queue:
+                if task.task_id == task_id:
+                    queue.remove(task)
+                    self.waiting_reasons.pop(task_id, None)
+                    return task
+        return None
 
     def _lifecycle(self, task, state, robot_id='', error_code=0, reason=''):
         record = self.tasks[task.task_id]
