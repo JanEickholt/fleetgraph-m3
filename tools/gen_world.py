@@ -26,10 +26,16 @@ MAP_RESOLUTION = 0.05     # m/px
 MAP_X_RANGE = (-1.5, 9.5)     # map extent (m)
 MAP_Y_RANGE = (-3.5, 3.5)
 
-# PGM pixel values (Nav2 trinary map)
+# PGM pixel values (Nav2 trinary map) and the thresholds map_server reads
+# them with: occ = 1 - pixel / 255 is free below FREE_THRESH, occupied above
+# OCCUPIED_THRESH, unknown in between. 0.196 is what the ROS 1 map_saver
+# writes next to 205: occ(205) = 0.196078 lies just above it, so 205 loads
+# as unknown (with 0.25 it loaded as free).
 PIXEL_FREE = 254
 PIXEL_OCCUPIED = 0
 PIXEL_UNKNOWN = 205
+OCCUPIED_THRESH = 0.65
+FREE_THRESH = 0.196
 
 # Floor plan: hall x in [-1, 4], two labs x in [4, 9] split at y = 0.
 # Doors (1.0 m) from the hall into lab_1 (y = +1.5) and lab_2 (y = -1.5).
@@ -191,8 +197,8 @@ mode: trinary
 resolution: {MAP_RESOLUTION}
 origin: [{MAP_X_RANGE[0]}, {MAP_Y_RANGE[0]}, 0.0]
 negate: 0
-occupied_thresh: 0.65
-free_thresh: 0.25
+occupied_thresh: {OCCUPIED_THRESH}
+free_thresh: {FREE_THRESH}
 """
     return [(os.path.join(maps_dir, f'{WORLD}.pgm'), pgm),
             (os.path.join(maps_dir, f'{WORLD}.yaml'), map_yaml.encode())]

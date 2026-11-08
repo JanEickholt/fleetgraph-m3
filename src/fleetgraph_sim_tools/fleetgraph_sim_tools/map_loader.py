@@ -4,9 +4,10 @@ Python (no rclpy; tests/unit/test_map_loader.py).
 
 Trinary mode as in nav2_map_server: occ = 1 - pixel / maxval (pixel / maxval
 with negate); occupied (100) above occupied_thresh, free (0) below
-free_thresh, unknown (-1) in between. Consequence for the maps of
-tools/gen_world.py: their 205 border pixels give occ 0.196 < free_thresh
-0.25, so map_server, and this loader, read the outside as free.
+free_thresh, unknown (-1) in between, both thresholds from the yaml. The
+maps of tools/gen_world.py carry free_thresh 0.196 (the ROS 1 map_saver's
+value): their 205 border pixels give occ 0.196078 and read as unknown, as
+in map_server.
 """
 import os
 

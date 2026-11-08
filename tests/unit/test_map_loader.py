@@ -1,11 +1,13 @@
 """Nav2 map files to OccupancyMap (fleetgraph_sim_tools.map_loader). Pure: no
 rclpy. The grid must equal what nav2_map_server publishes for the same files
-(trinary mode), which was checked on the lab-floor map: map_server reads its
-205 border pixels as free, because 1 - 205/255 = 0.196 < free_thresh 0.25.
+(trinary mode), which was checked on the lab-floor map: with its free_thresh
+0.196, map_server reads the 205 border pixels as unknown (1 - 205/255 =
+0.196078); free_thresh 0.25 read them as free.
 """
 import os
 
 import pytest
+import yaml
 
 from fleetgraph_sim_tools import map_loader
 
@@ -32,6 +34,13 @@ def test_pixels_map_like_map_server_and_rows_flip_to_grid_order():
     # 128 -> occ 0.498 -> unknown, 100 -> occ 0.608 -> unknown
     assert list(grid.data) == [UNKNOWN, FREE, UNKNOWN, OCCUPIED, FREE, FREE]
     assert grid.is_occupied(-0.9, 2.6) and not grid.is_occupied(-0.4, 2.6)
+
+
+def test_a_205_pixel_loads_as_unknown_with_the_lab_floor_thresholds():
+    with open(LAB_MAP) as file:
+        lab_yaml = yaml.safe_load(file)
+    grid = map_loader.from_nav2(lab_yaml, pgm([[254, 205, 0]]))
+    assert list(grid.data) == [FREE, UNKNOWN, OCCUPIED]
 
 
 def test_negate_reads_dark_pixels_as_free():
@@ -70,10 +79,19 @@ def test_lab_floor_map_has_the_walls_and_furniture_but_not_the_crate():
     grid = map_loader.load(LAB_MAP)          # image path is relative to the yaml
     assert (grid.width, grid.height, grid.resolution, grid.origin_x, grid.origin_y) == \
         (220, 140, 0.05, -1.5, -3.5)
-    assert set(grid.data) == {FREE, OCCUPIED}
     for x, y in ((4.0, 0.5), (4.0, 2.5), (-1.0, 0.0), (1.5, 2.6), (7.5, 2.0)):
         assert grid.is_occupied(x, y), (x, y)         # walls, shelf, lab table
-    for x, y in ((0.5, 0.5), (2.5, 0.8), (4.0, 1.5), (-1.4, -3.4)):
-        assert not grid.is_occupied(x, y), (x, y)     # hall, crate, door, outside
+    for x, y in ((0.5, 0.5), (2.5, 0.8), (4.0, 1.5)):
+        assert not grid.is_occupied(x, y), (x, y)     # hall, crate, door
     assert grid.line_of_sight(3.0, 1.5, 6.0, 1.5)            # through door_lab1
     assert not grid.line_of_sight(3.0, 0.0, 6.0, 0.5)        # through the wall
+
+
+def test_lab_floor_map_is_unknown_exactly_outside_the_outer_walls():
+    grid = map_loader.load(LAB_MAP)
+    for row in range(grid.height):
+        y = grid.origin_y + (row + 0.5) * grid.resolution
+        for col in range(grid.width):
+            x = grid.origin_x + (col + 0.5) * grid.resolution
+            outside = not (-1.05 <= x <= 9.05 and -3.05 <= y <= 3.05)    # wall outer faces
+            assert (grid.data[row * grid.width + col] == UNKNOWN) == outside, (x, y)
