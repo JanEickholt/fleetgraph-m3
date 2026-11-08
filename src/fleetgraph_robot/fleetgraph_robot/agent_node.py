@@ -30,6 +30,7 @@ from fleetgraph_interfaces.msg import (
     ErrorInfo, RobotConnection, RobotState, TaskAssignment, TaskCommand, TaskUpdate)
 from fleetgraph_robot import contract
 from fleetgraph_robot.battery import BatteryModel
+from fleetgraph_robot.nav_failure import classify_failure
 from fleetgraph_robot.task_machine import (
     CancelNavigation, ErrorCode, Navigate, TaskMachine, Update, Wait)
 
@@ -215,10 +216,13 @@ class Agent(Node):
 
     def _on_result(self, generation, future):
         response = future.result()
-        succeeded = response.status == GoalStatus.STATUS_SUCCEEDED
-        reason = '' if succeeded else (getattr(response.result, 'error_msg', '') or
-                                       f'nav2 status {response.status}')
-        self._dispatch(self.machine.nav_result(generation, succeeded, reason))
+        if response.status == GoalStatus.STATUS_SUCCEEDED:
+            self._dispatch(self.machine.nav_result(generation, True))
+            return
+        result = response.result
+        failure = classify_failure(result.error_code, getattr(result, 'error_msg', ''))
+        reason = failure.reason or f'nav2 status {response.status}'
+        self._dispatch(self.machine.nav_result(generation, False, reason))
 
     def _cancel_navigation(self):
         if self._goal_handle is not None:
