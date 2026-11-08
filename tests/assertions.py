@@ -165,13 +165,24 @@ TASK_STATES = {'RECEIVED': 0, 'PARSED': 1, 'QUEUED': 2, 'ASSIGNED': 3,
 _STATE_NAMES = {value: name for name, value in TASK_STATES.items()}
 
 
+def _meta_stamp(event):
+    stamp = event[1].meta.stamp
+    return (stamp.sec, stamp.nanosec)
+
+
 def _task_events(view, topic, task_id, source=None):
-    return [(timestamp, msg) for timestamp, msg in _from_source(view.stream(topic), source)
-            if msg.task_id == task_id]
+    """The task's TaskUpdates (from source) sorted by Meta.stamp; the sort is
+    stable, so equal stamps keep their arrival order. Arrival order is not
+    publication order: under DDS discovery delay the mock's RECEIVED ..
+    ASSIGNED can reach the recorder after the agent's REJECTED. Stamps of
+    different nodes compare only on one clock (all on sim time or none)."""
+    events = [(timestamp, msg) for timestamp, msg in _from_source(view.stream(topic), source)
+              if msg.task_id == task_id]
+    return sorted(events, key=_meta_stamp)
 
 
 def _history(events):
-    """State names in order, consecutive repeats collapsed."""
+    """State names in event order, consecutive repeats collapsed."""
     names = []
     for _, msg in events:
         name = _STATE_NAMES.get(msg.state, str(msg.state))
@@ -184,17 +195,14 @@ def _history(events):
 def task_state(view, task_id, state, topic='/fleet/task_update',
                error_code=None, source=None, within_sec=None, **_):
     """Some TaskUpdate for task_id has `state` (+ error_code / source, and
-    sim time <= within_sec if given)."""
+    sim time <= within_sec if given: the earliest such update's arrival)."""
     wanted_state = TASK_STATES[state]
     events = _task_events(view, topic, task_id, source)
-    for timestamp, msg in events:
-        if msg.state != wanted_state:
-            continue
-        if error_code is not None and msg.error_code != int(error_code):
-            continue
-        if within_sec is not None and timestamp > float(within_sec):
-            return (f"task {task_id} reached {state} only at t={timestamp:.1f}s "
-                    f"> {within_sec}s")
+    first = min((timestamp for timestamp, msg in events if msg.state == wanted_state
+                 and (error_code is None or msg.error_code == int(error_code))), default=None)
+    if first is not None:
+        if within_sec is not None and first > float(within_sec):
+            return f"task {task_id} reached {state} only at t={first:.1f}s > {within_sec}s"
         return None
     codes = sorted({msg.error_code for _, msg in events})
     return (f"task {task_id} never reached {state}"
