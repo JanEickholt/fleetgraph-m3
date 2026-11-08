@@ -104,9 +104,15 @@ def test_observes_fail_without_messages():
 def test_observes_only_pass_ignores_other_categories_and_sources():
     assert assertions.observes_only(DRIVE, topic=TOPIC, source='robot_1', category='OBSTACLE',
                                     points=[list(CRATE)], tol=0.5) is None
-    # a source that reports no entity of the category has no false positive
-    assert assertions.observes_only(DRIVE, topic=TOPIC, source='robot_1', category='ROBOT',
-                                    points=[], tol=0.5) is None
+
+
+def test_observes_only_fail_without_a_report_of_the_category():
+    # a source that never reports the category proves nothing about its false
+    # positives (a perception node that stopped tracking passed before)
+    failure = assertions.observes_only(DRIVE, topic=TOPIC, source='robot_1', category='ROBOT',
+                                       points=[], tol=0.5)
+    assert failure and 'no ROBOT entity ever reported on /fleet/scene_observation from ' \
+        'robot_1' in failure
 
 
 def test_observes_only_fail_on_a_wall_obstacle():

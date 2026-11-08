@@ -607,13 +607,19 @@ def observes(view, topic, source, category, x, y, tol, within_sec=None):
 def observes_only(view, topic, source, category, points, tol):
     """Every entity of the category that source reports lies within tol of
     one of the listed [x, y] points: a false-positive guard (walls reported
-    as obstacles, map misalignment). Fails closed without messages."""
+    as obstacles, map misalignment). Fails closed without messages and
+    without a single report of the category: a source that never reports
+    one proves nothing about its false positives."""
     stream = _from_source(view.stream(topic), source)
     where = _where(topic, source)
     if not stream:
         return f"no messages on {where}"
+    reports = _reports(stream, category)
+    if not reports:
+        return (f"no {category} entity ever reported on {where} "
+                f"({len(stream)} messages): nothing to hold against {points}")
     strays = []
-    for timestamp, entity in _reports(stream, category):
+    for timestamp, entity in reports:
         distance = min((_distance_xy(entity.position, px, py) for px, py in points),
                        default=math.inf)
         if distance > float(tol):
