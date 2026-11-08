@@ -2,7 +2,8 @@
 node feeds it events and executes the commands it returns, so all task
 logic is unit-testable without a simulator (tests/unit/test_task_machine.py).
 
-Events in:   assign(), nav_feedback(), nav_result(), dwell_done(), cancel()
+Events in:   assign(), nav_feedback(), nav_result(), dwell_done(),
+             blocked_wait_done(), cancel()
 Outputs:     a list mixing Update (-> /fleet/task_update) and commands
              Navigate / CancelNavigation / Wait (-> Nav2 action, timers).
 
@@ -11,7 +12,15 @@ legs: GO_TO [target], DELIVERY [pickup, dropoff] with a dwell after each,
 PATROL waypoints * loops. A failed leg is retried max_leg_retries times
 (counted as replanning events), then the task FAILS with
 reassignment_requested so Module 1 can move it to another robot.
+
+A blocked leg (nav_result(blocked=True): something stands in the way, see
+nav_failure.py) uses no leg retry: the machine stays EXECUTING, waits
+blocked_wait_sec and retries (a replanning event) while the leg has been
+blocked for less than max_blocked_sec since its first blocked report (time
+from `clock`, the agent passes ROS time); after that the task FAILS with
+ERROR_BLOCKED and reassignment_requested.
 """
+import time
 from dataclasses import dataclass, field, replace
 
 
@@ -34,6 +43,7 @@ class ErrorCode:
     LOW_BATTERY = 203
     ROBOT_UNAVAILABLE = 204
     NAVIGATION_FAILED = 300
+    BLOCKED = 301
     CANCELLED_BY_OPERATOR = 400
 
 
@@ -96,12 +106,13 @@ class Navigate:
 
 @dataclass
 class CancelNavigation:
-    pass
+    pass                            # stops the Nav2 goal and a pending Wait
 
 
 @dataclass
 class Wait:
-    seconds: float                  # call dwell_done() afterwards
+    seconds: float
+    blocked: bool = False           # then call blocked_wait_done(), else dwell_done()
 
 
 @dataclass
@@ -110,19 +121,28 @@ class _Leg:
     dwell: bool
 
 
+_DWELL, _BLOCKED = 'dwell', 'blocked'     # what a pending Wait is for
+
+
 class TaskMachine:
     def __init__(self, capabilities, resolve, min_battery=0.15, dwell_sec=2.0,
-                 max_leg_retries=1):
+                 max_leg_retries=1, blocked_wait_sec=5.0, max_blocked_sec=60.0,
+                 clock=time.monotonic):
         self.capabilities = set(capabilities)
         self.resolve = resolve      # location_id -> Goal or None
         self.min_battery = min_battery
         self.dwell_sec = dwell_sec
         self.max_leg_retries = max_leg_retries
+        self.blocked_wait_sec = blocked_wait_sec
+        self.max_blocked_sec = max_blocked_sec
+        self.clock = clock          # () -> s
         self.replan_count = 0       # metric: retried legs over the lifetime
         self._task = None           # active TaskSpec
         self._legs = []
         self._leg_index = 0
         self._leg_retries = 0
+        self._blocked_since = None  # clock() at this leg's first blocked report
+        self._waiting = None        # _DWELL / _BLOCKED while a Wait is pending
         self._leg_length = None     # first/max distance_remaining of this leg
         self._progress = 0.0
         self._distance_remaining = -1.0
@@ -177,7 +197,7 @@ class TaskMachine:
 
         self._task, self._legs, self._leg_index = spec, legs, 0
         self._progress = 0.0
-        return restart + self._start_leg(retry=False)
+        return restart + self._start_leg()
 
     def nav_feedback(self, distance_remaining):
         if not self._task or self._generation == 0:
@@ -191,28 +211,35 @@ class TaskMachine:
         self._distance_remaining = distance
         return [self._update(TaskState.EXECUTING)]
 
-    def nav_result(self, generation, succeeded, reason=''):
+    def nav_result(self, generation, succeeded, reason='', blocked=False):
         if not self._task or generation != self._generation:
             return []                                       # stale
         self._generation = 0
         if not succeeded:
+            if blocked:
+                return self._wait_out_blocked_route(reason)
             if self._leg_retries < self.max_leg_retries:
+                self._leg_retries += 1
                 self.replan_count += 1
-                return self._start_leg(retry=True, reason=f'replanning: {reason}')
-            leg = self._legs[self._leg_index]
-            return [self._finish(
-                TaskState.FAILED, ErrorCode.NAVIGATION_FAILED,
-                f'leg {self._leg_index} to {leg.goal.location_id} '
-                f'failed: {reason}', reassign=True)]
+                return self._navigate(reason=f'replanning: {reason}')
+            return [self._finish(TaskState.FAILED, ErrorCode.NAVIGATION_FAILED,
+                                 f'{self._leg_name()} failed: {reason}', reassign=True)]
         self._progress = max(self._progress, (self._leg_index + 1) / len(self._legs))
         if self._legs[self._leg_index].dwell:
+            self._waiting = _DWELL
             return [Wait(self.dwell_sec), self._update(TaskState.EXECUTING)]
         return self._next_leg()
 
     def dwell_done(self):
-        if not self._task or self._generation != 0:
+        if not self._task or self._waiting != _DWELL:
             return []
         return self._next_leg()
+
+    def blocked_wait_done(self):
+        if not self._task or self._waiting != _BLOCKED:
+            return []
+        self.replan_count += 1
+        return self._navigate(reason='retrying blocked route')
 
     def cancel(self, task_id, reason):
         if not self._task or task_id != self._task.task_id:
@@ -243,8 +270,14 @@ class TaskMachine:
         dwell = spec.type == TaskType.DELIVERY
         return [_Leg(goal, dwell) for goal in goals], None
 
-    def _start_leg(self, retry, reason=''):
-        self._leg_retries = self._leg_retries + 1 if retry else 0
+    def _start_leg(self):
+        self._leg_retries = 0
+        self._blocked_since = None
+        return self._navigate()
+
+    def _navigate(self, reason=''):
+        """Send the current leg to Nav2, first try or retry."""
+        self._waiting = None
         self._leg_length = None
         self._distance_remaining = -1.0
         self._generation_counter += 1
@@ -253,12 +286,30 @@ class TaskMachine:
                             self._generation)
         return [navigate, self._update(TaskState.EXECUTING, reason=reason)]
 
+    def _wait_out_blocked_route(self, reason):
+        now = self.clock()
+        if self._blocked_since is None:
+            self._blocked_since = now
+        blocked_sec = now - self._blocked_since
+        if blocked_sec >= self.max_blocked_sec:
+            return [self._finish(TaskState.FAILED, ErrorCode.BLOCKED,
+                                 f'{self._leg_name()} blocked for {blocked_sec:.1f} s: {reason}',
+                                 reassign=True)]
+        self._waiting = _BLOCKED
+        waiting_reason = (f'waiting {self.blocked_wait_sec:g} s for blocked route '
+                          f'({blocked_sec:.1f} of {self.max_blocked_sec:g} s blocked): {reason}')
+        return [Wait(self.blocked_wait_sec, blocked=True),
+                self._update(TaskState.EXECUTING, reason=waiting_reason)]
+
     def _next_leg(self):
         self._leg_index += 1
         if self._leg_index >= len(self._legs):
             self._progress = 1.0
             return [self._finish(TaskState.COMPLETED, ErrorCode.NONE, '')]
-        return self._start_leg(retry=False)
+        return self._start_leg()
+
+    def _leg_name(self):
+        return f'leg {self._leg_index} to {self._legs[self._leg_index].goal.location_id}'
 
     def _update(self, state, error_code=ErrorCode.NONE, reason='', reassign=False):
         task = self._task
@@ -275,7 +326,7 @@ class TaskMachine:
             update = replace(update, leg_index=max(0, len(self._legs) - 1),
                              distance_remaining=0.0)
         self._terminal_updates[update.task_id] = update
-        self._task, self._legs, self._generation = None, [], 0
+        self._task, self._legs, self._generation, self._waiting = None, [], 0, None
         return update
 
     def _reject(self, spec, error_code, reason):

@@ -19,9 +19,11 @@ def test_task_states_mirror():
 
 
 def test_error_codes_mirror():
-    for name, value in vars(task_machine.ErrorCode).items():
-        if name.isupper():
-            assert getattr(messages.TaskUpdate, f'ERROR_{name}') == value, name
+    mirrored = {name: value for name, value in vars(task_machine.ErrorCode).items()
+                if name.isupper()}
+    assert 'BLOCKED' in mirrored                    # a leg blocked for max_blocked_sec
+    for name, value in mirrored.items():
+        assert getattr(messages.TaskUpdate, f'ERROR_{name}') == value, name
 
 
 def test_task_types_mirror():

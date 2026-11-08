@@ -1,6 +1,7 @@
 """Robot-side task state machine (fleetgraph_robot.task_machine). Pure — no
 rclpy, no sim. Covers accept/reject reasons, leg planning per task type,
-progress, retry-then-fail, cancel, and idempotent re-delivery.
+progress, retry-then-fail, waiting out a blocked route, cancel, and idempotent
+re-delivery.
 """
 import pytest
 
@@ -196,6 +197,176 @@ def test_nav_failure_retries_then_fails_requesting_reassignment():
     assert (update.state, update.error_code, update.reassignment_requested) == \
         (TaskState.FAILED, ErrorCode.NAVIGATION_FAILED, True)
     assert 'planner failed' in update.reason and machine.active_task_id == ''
+
+
+# -------------------------------------------------------- blocked route
+
+NO_PATH = 'planner: no valid path (208)'
+
+
+class Clock:
+    """The machine's clock, set by hand (s)."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def blocked_machine(**options):
+    clock = Clock()
+    options.setdefault('blocked_wait_sec', 5.0)
+    options.setdefault('max_blocked_sec', 60.0)
+    return make_machine(clock=clock, **options), clock
+
+
+def report_blocked(machine, navigation):
+    return machine.nav_result(navigation.generation, succeeded=False, reason=NO_PATH,
+                              blocked=True)
+
+
+def test_blocked_leg_waits_then_retries_and_completes():
+    machine, clock = blocked_machine()
+    navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    clock.now = 12.0
+    outputs = report_blocked(machine, navigation)
+    assert of_type(outputs, Wait) == [Wait(5.0, blocked=True)] and not navigations(outputs)
+    update = only_update(outputs)
+    assert (update.state, update.error_code, update.reassignment_requested) == \
+        (TaskState.EXECUTING, ErrorCode.NONE, False)
+    assert update.reason == f'waiting 5 s for blocked route (0.0 of 60 s blocked): {NO_PATH}'
+    assert machine.replan_count == 0 and machine.active_task_id == 't1'
+    clock.now = 17.0
+    outputs = machine.blocked_wait_done()
+    retry = navigations(outputs)[0]
+    assert retry.goal == navigation.goal and retry.generation != navigation.generation
+    assert only_update(outputs).reason == 'retrying blocked route'
+    assert machine.replan_count == 1
+    update = only_update(machine.nav_result(retry.generation, succeeded=True))
+    assert (update.state, update.error_code) == (TaskState.COMPLETED, ErrorCode.NONE)
+
+
+def test_blocked_leg_fails_after_max_blocked_sec_from_its_first_blocked_report():
+    machine, clock = blocked_machine(blocked_wait_sec=5.0, max_blocked_sec=60.0)
+    navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    # Nav2 reports blocked after its own recoveries, 30 s into the leg (not
+    # counted), then 20 s into each retry: blocked 0, 25 and 50 s, wait and retry
+    for now in (30.0, 55.0, 80.0):
+        clock.now = now
+        assert of_type(report_blocked(machine, navigation), Wait) == [Wait(5.0, blocked=True)], now
+        clock.now = now + 5.0
+        navigation = navigations(machine.blocked_wait_done())[0]
+    clock.now = 90.0                                        # blocked 60 s: the limit
+    update = only_update(report_blocked(machine, navigation))
+    assert (update.state, update.error_code, update.reassignment_requested) == \
+        (TaskState.FAILED, ErrorCode.BLOCKED, True)
+    assert update.reason == f'leg 0 to lab_1 blocked for 60.0 s: {NO_PATH}'
+    assert machine.replan_count == 3 and machine.active_task_id == ''
+
+
+def test_a_completed_leg_resets_the_blocked_time():
+    machine, clock = blocked_machine(blocked_wait_sec=5.0, max_blocked_sec=60.0)
+    spec = make_spec(task_type=TaskType.PATROL, location_ids=('lab_1', 'lab_2'))
+    navigation = navigations(machine.assign(spec, battery=0.9))[0]
+    clock.now = 10.0
+    report_blocked(machine, navigation)
+    clock.now = 15.0
+    navigation = navigations(machine.blocked_wait_done())[0]
+    clock.now = 50.0
+    navigation = navigations(machine.nav_result(navigation.generation, succeeded=True))[0]
+    assert navigation.goal == LOCATIONS['lab_2']
+    clock.now = 100.0                                       # 90 s after leg 0's first report
+    assert of_type(report_blocked(machine, navigation), Wait) == [Wait(5.0, blocked=True)]
+    clock.now = 105.0
+    navigation = navigations(machine.blocked_wait_done())[0]
+    clock.now = 159.9                                       # leg 1 blocked 59.9 s
+    assert of_type(report_blocked(machine, navigation), Wait) == [Wait(5.0, blocked=True)]
+    clock.now = 164.9
+    navigation = navigations(machine.blocked_wait_done())[0]
+    clock.now = 165.0
+    update = only_update(report_blocked(machine, navigation))
+    assert (update.state, update.error_code) == (TaskState.FAILED, ErrorCode.BLOCKED)
+    assert update.reason.startswith('leg 1 to lab_2 blocked for 65.0 s')
+
+
+def test_blocked_retries_leave_the_leg_retries_for_other_failures():
+    machine, clock = blocked_machine(max_leg_retries=1)
+    navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    for now in (10.0, 20.0, 30.0):                          # more than max_leg_retries
+        clock.now = now
+        report_blocked(machine, navigation)
+        navigation = navigations(machine.blocked_wait_done())[0]
+    outputs = machine.nav_result(navigation.generation, succeeded=False, reason='tf error')
+    retry = navigations(outputs)[0]
+    assert only_update(outputs).reason == 'replanning: tf error'
+    update = only_update(machine.nav_result(retry.generation, succeeded=False, reason='tf error'))
+    assert (update.state, update.error_code, update.reassignment_requested) == \
+        (TaskState.FAILED, ErrorCode.NAVIGATION_FAILED, True)
+    assert machine.replan_count == 4
+
+
+def test_max_blocked_sec_zero_fails_on_the_first_blocked_report():
+    machine, _ = blocked_machine(max_blocked_sec=0.0)
+    navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    update = only_update(report_blocked(machine, navigation))
+    assert (update.state, update.error_code) == (TaskState.FAILED, ErrorCode.BLOCKED)
+
+
+def test_cancel_during_the_blocked_wait_leaves_no_stale_timer_effect():
+    machine, _ = blocked_machine()
+    navigation = navigations(machine.assign(make_spec('t1'), battery=0.9))[0]
+    report_blocked(machine, navigation)
+    outputs = machine.cancel('t1', 'operator')
+    assert of_type(outputs, CancelNavigation)               # the agent stops its wait timer
+    update = only_update(outputs)
+    assert (update.state, update.error_code) == \
+        (TaskState.CANCELLED, ErrorCode.CANCELLED_BY_OPERATOR)
+    assert machine.blocked_wait_done() == []                # the timer fired anyway
+    navigation = navigations(machine.assign(make_spec('t2'), battery=0.9))[0]
+    assert machine.blocked_wait_done() == [] and machine.dwell_done() == []
+    assert machine.nav_generation == navigation.generation and machine.replan_count == 0
+
+
+def test_newer_revision_during_the_blocked_wait_restarts_without_the_wait():
+    machine, _ = blocked_machine()
+    navigation = navigations(machine.assign(make_spec(rev=1), battery=0.9))[0]
+    report_blocked(machine, navigation)
+    outputs = machine.assign(make_spec(rev=2, location_ids=('lab_2',)), battery=0.9)
+    assert of_type(outputs, CancelNavigation)
+    restart = navigations(outputs)[0]
+    assert restart.goal == LOCATIONS['lab_2'] and only_update(outputs).assignment_rev == 2
+    assert machine.blocked_wait_done() == [] and machine.nav_generation == restart.generation
+
+
+def test_stale_nav_results_are_ignored_around_the_blocked_wait():
+    machine, _ = blocked_machine()
+    first = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    report_blocked(machine, first)
+    assert machine.nav_result(first.generation, succeeded=True) == []      # duplicate
+    assert report_blocked(machine, first) == []
+    assert machine.nav_feedback(1.0) == []
+    retry = navigations(machine.blocked_wait_done())[0]
+    assert machine.nav_result(first.generation, succeeded=True) == []
+    assert machine.nav_generation == retry.generation and machine.active_task_id == 't1'
+    update = only_update(machine.nav_result(retry.generation, succeeded=True))
+    assert update.state == TaskState.COMPLETED
+
+
+def test_blocked_wait_and_delivery_dwell_are_not_confused():
+    machine, _ = blocked_machine(dwell_sec=2.0)
+    spec = make_spec(task_type=TaskType.DELIVERY, location_ids=('storage', 'lab_1'))
+    pickup = navigations(machine.assign(spec, battery=0.9))[0]
+    assert of_type(report_blocked(machine, pickup), Wait) == [Wait(5.0, blocked=True)]
+    assert machine.dwell_done() == []                       # no dwell due: the leg stays
+    retry = navigations(machine.blocked_wait_done())[0]
+    assert retry.goal == LOCATIONS['storage'] and retry.leg_index == 0
+    outputs = machine.nav_result(retry.generation, succeeded=True)
+    assert of_type(outputs, Wait) == [Wait(2.0)]            # loading, not blocked
+    assert machine.blocked_wait_done() == []                # no blocked wait due: no retry
+    outputs = machine.dwell_done()
+    assert navigations(outputs)[0].goal == LOCATIONS['lab_1']
+    assert only_update(outputs).leg_index == 1
 
 
 # --------------------------------------------------------------- cancel

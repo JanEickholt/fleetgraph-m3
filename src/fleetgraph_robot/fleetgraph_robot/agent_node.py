@@ -54,6 +54,8 @@ class Agent(Node):
             ('min_battery', 0.15),
             ('dwell_sec', 2.0),
             ('max_leg_retries', 1),
+            ('blocked_wait_sec', 5.0),        # wait before retrying a blocked leg
+            ('max_blocked_sec', 60.0),        # then the task fails with ERROR_BLOCKED
             ('battery_initial', 1.0),
             ('battery_drain_per_m', 0.004),
             ('battery_drain_per_s', 0.0001),
@@ -69,7 +71,10 @@ class Agent(Node):
         self.machine = TaskMachine(
             capabilities=self.params['capabilities'], resolve=self.locations.get,
             min_battery=self.params['min_battery'], dwell_sec=self.params['dwell_sec'],
-            max_leg_retries=self.params['max_leg_retries'])
+            max_leg_retries=self.params['max_leg_retries'],
+            blocked_wait_sec=self.params['blocked_wait_sec'],
+            max_blocked_sec=self.params['max_blocked_sec'],
+            clock=lambda: self.get_clock().now().nanoseconds * 1e-9)
         self.meta = contract.MetaStamper(self.robot_id, self.get_clock())
 
         self.pub_update = self.create_publisher(
@@ -90,7 +95,7 @@ class Agent(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.nav_client = ActionClient(self, NavigateToPose, self.params['nav_action'])
         self._goal_handle = None
-        self._dwell_timer = None
+        self._wait_timer = None
         self._last_feedback_time = None
 
         self.battery = BatteryModel(self.params['battery_initial'],
@@ -146,7 +151,7 @@ class Agent(Node):
             elif isinstance(output, CancelNavigation):
                 self._cancel_navigation()
             elif isinstance(output, Wait):
-                self._start_dwell(output.seconds)
+                self._start_wait(output)
 
     def _publish_update(self, update):
         msg = contract.update_to_msg(update, self.robot_id)
@@ -222,22 +227,30 @@ class Agent(Node):
         result = response.result
         failure = classify_failure(result.error_code, getattr(result, 'error_msg', ''))
         reason = failure.reason or f'nav2 status {response.status}'
-        self._dispatch(self.machine.nav_result(generation, False, reason))
+        self._dispatch(self.machine.nav_result(generation, False, reason,
+                                               blocked=failure.blocked))
 
     def _cancel_navigation(self):
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
             self._goal_handle = None
-        if self._dwell_timer is not None:
-            self._dwell_timer.cancel()
-            self._dwell_timer = None
+        self._stop_wait()
 
-    def _start_dwell(self, seconds):
-        def dwell_finished():
-            self._dwell_timer.cancel()
-            self._dwell_timer = None
-            self._dispatch(self.machine.dwell_done())
-        self._dwell_timer = self.create_timer(seconds, dwell_finished)
+    def _start_wait(self, wait):
+        # a dwell and a blocked-route wait end in different events
+        done = self.machine.blocked_wait_done if wait.blocked else self.machine.dwell_done
+        self._stop_wait()
+
+        def finished():
+            self._stop_wait()
+            self._dispatch(done())
+        self._wait_timer = self.create_timer(wait.seconds, finished)
+
+    def _stop_wait(self):
+        if self._wait_timer is not None:
+            self._wait_timer.cancel()
+            self.destroy_timer(self._wait_timer)
+            self._wait_timer = None
 
     # ---------------------------------------------------------- telemetry
     def _status(self):
