@@ -63,7 +63,13 @@ script's, else robot_1). Camera sensors: `sim.launch.py camera:=true`. With a di
   low battery (203), unavailable/maintenance (204), malformed task (101), busy (200).
 - Idempotent: repeated (task_id, rev) is acked, older rev dropped, newer rev restarts.
 - A failed leg is retried once (counted as a replanning event), then FAILED (300) with
-  `reassignment_requested`.
+  `reassignment_requested`. The reason names the Nav2 code, e.g. `planner: no valid path (208)`.
+- A blocked leg is waited out instead (`nav_failure.py`: no valid path, start or goal occupied,
+  the controller held up by something in front): the task stays EXECUTING with a reason saying
+  it waits for a blocked route, and the leg is retried `blocked_wait_sec` (5.0) after each
+  blocked report, counted as a replanning event. Once the leg has been blocked for
+  `max_blocked_sec` (60.0, sim seconds since its first blocked report), the task is FAILED with
+  ERROR_BLOCKED (301) and `reassignment_requested`. Both are agent parameters.
 - Progress 0..1 is monotonic, computed from Nav2 `distance_remaining` per leg.
 - RobotState at 2 Hz (pose from AMCL TF, never ground truth), RobotConnection ONLINE/OFFLINE.
 - Maintenance: `ros2 param set /robot_1/fleetgraph_agent maintenance true`.
