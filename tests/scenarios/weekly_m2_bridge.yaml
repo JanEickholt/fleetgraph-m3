@@ -1,0 +1,41 @@
+name: weekly_m2_bridge
+# Module 2 link over rosbridge (ws://localhost:9090, JSON protocol,
+# m2_bridge.launch.py). The probe tools/ws_probe.py stands in for the
+# dashboard: it subscribes RobotState and TaskUpdate over the websocket and
+# echoes every message it receives to /mock_m2/* through the same websocket,
+# so these assertions measure what Module 2 receives. It also publishes one
+# plain-text task to /mock_m1/task_text (re-sent until the mock M1, started
+# later, acknowledges it); the mock parses it, allocates it and robot_1
+# executes it. Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py
+  ready_timeout_sec: 240
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /mock_m2/robot_state: fleetgraph_interfaces/msg/RobotState
+  /mock_m2/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /ground_truth/robot_1/odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - t: 2
+    launch: >-
+      fleetgraph_robot m2_bridge.launch.py
+      probe:='python3 /home/ubuntu/tools/ws_probe.py --text "Go to the hall"'
+  - {t: 15, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/m1_live.yaml"}}
+window_sec: 120
+assert:
+  # Module 2 receives RobotState at the nominal 2 Hz (the harness fails
+  # below 1.6 Hz), measured after the message crossed the websocket twice
+  - min_rate: {topic: /mock_m2/robot_state, hz: 2.0, source: robot_1}
+  # the text published through the websocket became exactly one task
+  - task_sequence: {task_id: live-0001, states: [RECEIVED, PARSED, QUEUED, ASSIGNED, EXECUTING, COMPLETED]}
+  - task_state: {task_id: live-0001, state: COMPLETED, source: robot_1}
+  - no_task_update: {task_id: live-0002}
+  # ... whose completion Module 2 sees
+  - task_state: {topic: /mock_m2/task_update, task_id: live-0001, state: COMPLETED, source: robot_1}
+  # ground truth: hall (2.0, -1.5)
+  - arrives_at: {topic: /ground_truth/robot_1/odom, x: 2.0, y: -1.5, tol: 0.35}

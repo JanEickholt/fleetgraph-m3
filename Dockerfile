@@ -47,13 +47,16 @@ RUN echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu \
 # inherits that ownership.
 RUN mkdir -p /home/ubuntu/ws && chown ubuntu:ubuntu /home/ubuntu/ws
 
-# FleetGraph M3 additions: Nav2 (navigation stack + bringup launch/params)
-# and the test harness dependencies.
+# FleetGraph M3 additions: Nav2 (navigation stack + bringup launch/params),
+# rosbridge (websocket link to the Module 2 dashboard) and the test harness
+# dependencies (python3-websocket: the websocket probe client).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-jazzy-navigation2 \
         ros-jazzy-nav2-bringup \
+        ros-jazzy-rosbridge-suite \
         python3-pytest \
         python3-yaml \
+        python3-websocket \
     && rm -rf /var/lib/apt/lists/*
 
 # Build artefacts live in named volumes mounted below ws/; create them owned

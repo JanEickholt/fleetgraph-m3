@@ -16,6 +16,8 @@ services:
     tty: true
     init: true
     shm_size: 1gb
+    ports:
+      - "9090:9090"   # rosbridge websocket (Module 2 dashboard link)
     environment:
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-30}
       - LIBGL_ALWAYS_SOFTWARE=1
