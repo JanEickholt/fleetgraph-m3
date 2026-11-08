@@ -32,7 +32,7 @@ fi
 if [ "${1:-}" = "--fast" ]; then
   shift
   # No sweep: these tests start no Gazebo, and the runner gives every
-  # scenario its own random ROS_DOMAIN_ID and kills its process groups.
+  # scenario its own ROS_DOMAIN_ID and GZ_PARTITION and kills its process groups.
   run_pytest -q -k "$FAST_TIER" "$@"
   exit $?
 fi

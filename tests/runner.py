@@ -1,6 +1,7 @@
 """Scenario runner: loads a YAML scenario, starts sim + actions, records
-topics, evaluates assertions. One fresh sim per scenario (own ROS_DOMAIN_ID,
-processes killed via process groups) so scenarios are independent.
+topics, evaluates assertions. One fresh sim per scenario (own ROS_DOMAIN_ID
+and GZ_PARTITION, processes killed via process groups) so scenarios are
+independent.
 
 Usage: runner.run(path) -> result dict:
   {name, passed, failures, expect_failure, evidence}
@@ -9,6 +10,7 @@ Raise ScenarioError for invalid scenario files.
 import inspect
 import os
 import random
+import re
 import signal
 import subprocess
 import time
@@ -21,6 +23,12 @@ from recorder import Recorder
 
 ROS_SETUP = ('source /opt/ros/jazzy/setup.bash && '
              'source /home/ubuntu/ws/install/setup.bash 2>/dev/null')
+# Scenario domains: never the container's own (compose.yaml, where manual
+# sims and the Module 2 bridge run), never one an earlier scenario of this
+# session used (its leftovers would join).
+DOMAIN_IDS = range(2, 100)
+CONTAINER_DOMAIN_ID = os.environ.get('ROS_DOMAIN_ID', '0')
+_used_domain_ids = set()
 
 ACTION_KINDS = ('run', 'launch', 'publish')
 MOCK_DATA = os.environ.get('FLEETGRAPH_MOCK_DATA', '/home/ubuntu/mock_data')
@@ -194,6 +202,22 @@ def _evidence(recorder, processes, wall_sec):
     return evidence
 
 
+def _isolate(name, rng=random):
+    """Give the scenario `name` its own ROS domain and Gazebo partition in
+    os.environ, which every process the runner starts inherits; returns
+    both. Ids repeat only once the range is used up."""
+    allowed = [domain_id for domain_id in DOMAIN_IDS if str(domain_id) != CONTAINER_DOMAIN_ID]
+    if _used_domain_ids.issuperset(allowed):
+        _used_domain_ids.clear()                    # range used up: start over
+    domain_id = rng.choice([domain_id for domain_id in allowed
+                            if domain_id not in _used_domain_ids])
+    _used_domain_ids.add(domain_id)
+    partition = f"{re.sub(r'[^A-Za-z0-9_]', '_', name)}_{os.getpid()}_{domain_id}"
+    os.environ['ROS_DOMAIN_ID'] = str(domain_id)
+    os.environ['GZ_PARTITION'] = partition
+    return str(domain_id), partition
+
+
 def _start_action(action):
     """Start the process for a `run` or `launch` action (None for `publish`)."""
     if 'run' in action:
@@ -227,7 +251,7 @@ def _wait_for_clock(recorder, sim):
 
 def run(path):
     scenario = load(path)
-    os.environ['ROS_DOMAIN_ID'] = str(random.randint(2, 99))
+    _isolate(scenario['name'])
     rclpy.init()
     recorder = None
     processes = []
