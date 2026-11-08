@@ -24,6 +24,7 @@ setup(
             'mock_central = fleetgraph_robot.mock_central_node:main',
             'scene_replica = fleetgraph_robot.scene_replica_node:main',
             'perception = fleetgraph_robot.perception_node:main',
+            'social_mask = fleetgraph_robot.social_mask_node:main',
         ],
     },
 )
