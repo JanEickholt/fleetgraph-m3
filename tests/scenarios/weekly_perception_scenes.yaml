@@ -3,17 +3,21 @@ name: weekly_perception_scenes
 # its perception node; sim_tools plays group_hall_person_lab1 and simulates
 # every robot's detector. The scene: two persons 0.8 m apart in the hall,
 # (3.3, -0.1) and (3.3, -0.9), and a visitor in lab_1 (7.3, 0.8) who leaves
-# at scene t 80. Scene time starts with the director, a few seconds into the
-# window: the visitor leaves at window t ~81-88. mock M1 (t ~21) sends
-# robot_1 to lab_1, robot_2 to lab_2, robot_3 to the hall. robot_1 sees the
-# group from its dock and as it sets off, then the visitor through door_lab1
-# and from the lab_1 goal until it leaves; robot_3 faces the group from
-# dock_3 and the hall. Checks on /fleet/scene_observation: persons where
-# they stand, the group as the local graph forms groups (a GROUP entity at
-# its members' centroid, persons within 1.2 m), the visitor INSIDE lab_1
-# and its removal, OBSTACLE only where something unmapped stands (the crate;
-# a person the lidar sees outside the camera's view is an OBSTACLE), and per
-# robot latency and gap-free delivery. Timebase: sim seconds.
+# at scene t 80. sim_tools and perception start at t 10, once Nav2 has
+# loaded: under host load, seven more processes joining while the Nav2
+# containers loaded their nodes lost a load_node response, and robot_1's
+# navigation never came up. Scene time starts with the director, a few
+# seconds after t 10: the visitor leaves at window t ~91-98. mock M1
+# (t ~21) sends robot_1 to lab_1, robot_2 to lab_2, robot_3 to the hall.
+# robot_1 sees the group from its dock and as it sets off, then the visitor
+# through door_lab1 and from the lab_1 goal until it leaves; robot_3 faces
+# the group from dock_3 and the hall. Checks on /fleet/scene_observation:
+# persons where they stand, the group as the local graph forms groups (a
+# GROUP entity at its members' centroid, persons within 1.2 m), the visitor
+# INSIDE lab_1 and its removal, OBSTACLE only where something unmapped
+# stands (the crate; a person the lidar sees outside the camera's view is an
+# OBSTACLE), and per robot latency and gap-free delivery.
+# Timebase: sim seconds.
 sim:
   launch: fleetgraph_sim sim.launch.py robots:=3
   ready_timeout_sec: 240
@@ -22,22 +26,22 @@ topics:
   /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
 actions:
   - {t: 0, launch: "fleetgraph_sim nav.launch.py robots:=3"}
-  - {t: 0, launch: "fleetgraph_sim_tools sim_tools.launch.py robots:=3 scene:=group_hall_person_lab1"}
   - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_1,
                  args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
   - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_2,
                  args: "--ros-args -r __ns:=/robot_2 -p robot_id:=robot_2 -p use_sim_time:=true"}}
   - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_3,
                  args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3 -p use_sim_time:=true"}}
-  - {t: 1, run: {pkg: fleetgraph_robot, exec: perception, tag: perception_robot_1,
-                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
-  - {t: 1, run: {pkg: fleetgraph_robot, exec: perception, tag: perception_robot_2,
-                 args: "--ros-args -r __ns:=/robot_2 -p robot_id:=robot_2 -p use_sim_time:=true"}}
-  - {t: 1, run: {pkg: fleetgraph_robot, exec: perception, tag: perception_robot_3,
-                 args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3 -p use_sim_time:=true"}}
+  - {t: 10, launch: "fleetgraph_sim_tools sim_tools.launch.py robots:=3 scene:=group_hall_person_lab1"}
+  - {t: 10, run: {pkg: fleetgraph_robot, exec: perception, tag: perception_robot_1,
+                  args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - {t: 10, run: {pkg: fleetgraph_robot, exec: perception, tag: perception_robot_2,
+                  args: "--ros-args -r __ns:=/robot_2 -p robot_id:=robot_2 -p use_sim_time:=true"}}
+  - {t: 10, run: {pkg: fleetgraph_robot, exec: perception, tag: perception_robot_3,
+                  args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3 -p use_sim_time:=true"}}
   - {t: 20, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
                   args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/fleet_three_robots.yaml"}}
-window_sec: 105
+window_sec: 115
 assert:
   - observes: {topic: /fleet/scene_observation, source: robot_1, category: PERSON,
                x: 7.3, y: 0.8, tol: 0.3}
