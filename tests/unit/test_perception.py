@@ -5,17 +5,21 @@ tests, which skip when the workspace is not built.
 import importlib.util
 import math
 import os
+import statistics
+import time
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from fleetgraph_robot.lidar_obstacles import OccupancyMap
+from fleetgraph_robot.lidar_obstacles import OccupancyMap, obstacle_detections
 from fleetgraph_robot.perception import (
-    SEMANTIC_SOURCE, coverage, localization_score, occupancy_from_grid, semantic_detections,
-    to_map)
+    SEMANTIC_SOURCE, MapMatcher, coverage, localization_score, occupancy_from_grid,
+    semantic_detections, to_map)
 from fleetgraph_robot.regions import load_regions
 from fleetgraph_robot.scene_graph import Category, Delta, Entity, Predicate, Relation
+
+import test_lidar_obstacles as lidar_tests                 # lab world, raycast
 
 CATEGORY = {category.name: category.value for category in Category}
 
@@ -119,6 +123,90 @@ def test_occupancy_from_grid_reads_an_occupancy_grid():
 def test_occupancy_from_grid_rejects_a_rotated_origin():
     with pytest.raises(ValueError, match='rotated'):
         occupancy_from_grid(grid(origin_yaw=0.3))
+
+
+# ------------------------------------------------------------ map matcher
+
+# True lidar poses on the dock -> lab_1 route and in the hall, each tried with
+# AMCL-like errors (dx m, dy m, dyaw deg): AMCL was measured up to 0.14 m and
+# 3 deg off ground truth while driving (2026-11-08).
+ROUTE = [(0.0, 0.0, 0.0), (1.5, 1.0, 0.6), (3.0, 1.5, 0.0), (3.6, 1.5, -0.05),
+         (4.5, 1.45, -0.05), (5.8, 1.3, -0.2), (2.5, -0.3, 1.2)]
+POSE_ERRORS = [(0.14, 0.05, 3.0), (-0.1, 0.12, -3.0), (0.2, -0.15, 4.0), (0.08, -0.08, -2.0)]
+
+
+@pytest.fixture(scope='module')
+def lab():
+    """(occupancy, all boxes, matcher, scan limits, raycast) of the lab world."""
+    world = lidar_tests.load_lab_world()
+    occupancy = lidar_tests.lab_map(world)
+    mapped, unmapped = lidar_tests.lab_boxes(world)
+    return (occupancy, mapped + unmapped, MapMatcher(occupancy), lidar_tests.SCAN_LIMITS,
+            lidar_tests.raycast)
+
+
+def shifted(pose, dx, dy, dyaw_deg):
+    return (pose[0] + dx, pose[1] + dy, pose[2] + math.radians(dyaw_deg))
+
+
+def pose_error(pose, truth):
+    return (math.hypot(pose[0] - truth[0], pose[1] - truth[1]),
+            abs(math.degrees(pose[2] - truth[2])))
+
+
+def test_map_matcher_corrects_amcl_like_pose_errors(lab):
+    _, boxes, matcher, limits, raycast = lab
+    for truth in ROUTE:
+        angle_min, increment, ranges = raycast(truth, boxes)
+        for error in POSE_ERRORS:
+            refined = matcher.refine(ranges, angle_min, increment, *limits,
+                                     shifted(truth, *error))
+            distance, turn = pose_error(refined, truth)
+            assert distance <= 0.06 and turn <= 1.25, (truth, error, distance, turn)
+
+
+def test_map_matcher_keeps_a_correct_pose(lab):
+    _, boxes, matcher, limits, raycast = lab
+    for truth in ROUTE:
+        angle_min, increment, ranges = raycast(truth, boxes)
+        distance, turn = pose_error(
+            matcher.refine(ranges, angle_min, increment, *limits, truth), truth)
+        assert distance <= 0.0125 and turn <= 0.25, (truth, distance, turn)
+
+
+def test_map_matcher_without_returns_keeps_the_pose(lab):
+    occupancy, _, matcher, limits, _ = lab
+    pose = (1.0, 1.0, 0.5)
+    assert matcher.refine([math.inf] * 360, -math.pi, 2 * math.pi / 360, *limits, pose) == pose
+
+
+def test_corrected_pose_leaves_only_the_crate(lab):
+    occupancy, boxes, matcher, limits, raycast = lab
+    truth = (3.0, 1.5, 0.0)                 # before the lab_1 door, crate behind
+    angle_min, increment, ranges = raycast(truth, boxes)
+
+    def obstacles(pose):
+        return obstacle_detections(ranges, angle_min, increment, limits[0], 4.0, pose,
+                                   occupancy, stamp=0.0, tolerance=0.2)
+
+    guess = shifted(truth, -0.1, 0.12, -3.0)
+    assert len(obstacles(guess)) > 1        # walls in free cells
+    (crate,) = obstacles(matcher.refine(ranges, angle_min, increment, *limits, guess))
+    assert math.hypot(crate.x - 2.5, crate.y - 0.8) < 0.15
+
+
+def test_map_matcher_is_fast_enough_for_10_hz_scans(lab):
+    _, boxes, matcher, limits, raycast = lab
+    angle_min, increment, ranges = raycast(ROUTE[2], boxes)
+    guess = shifted(ROUTE[2], *POSE_ERRORS[0])
+    samples = []
+    for _ in range(10):
+        start = time.perf_counter()
+        matcher.refine(ranges, angle_min, increment, *limits, guess)
+        samples.append(time.perf_counter() - start)
+    median = statistics.median(samples)
+    print(f'\nMapMatcher.refine(360 beams): median {median * 1e3:.1f} ms')
+    assert median < 0.1
 
 
 # ------------------------------------------------------ semantic detections

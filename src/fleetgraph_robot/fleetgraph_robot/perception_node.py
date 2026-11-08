@@ -11,16 +11,18 @@ base_footprint, stamped with the sensing time) and TF. Output:
 /fleet/scene_observation. Poses come from TF (AMCL), never from simulator
 ground truth.
 
-Per scan: the lidar's map pose at the scan stamp, lidar obstacles against
-the static map plus the semantic detections sensed up to that stamp (each
-placed with TF at its own stamp), and one LocalSceneGraph.integrate() with
-the scan's coverage. At publish_rate_hz the delta goes out when it holds
-anything (entities, removals, a changed relation set), otherwise at least
-every heartbeat_sec. Nothing is published before the first integrated scan.
+Per scan: the lidar's map pose at the scan stamp (TF, corrected against the
+static map by MapMatcher), lidar obstacles against the static map plus the
+semantic detections sensed up to that stamp (each placed with TF at its own
+stamp), and one LocalSceneGraph.integrate() with the scan's coverage. At
+publish_rate_hz the delta goes out when it holds anything (entities,
+removals, a changed relation set), otherwise at least every heartbeat_sec.
+Nothing is published before the first integrated scan.
 
 Latency = meta.stamp - sensor_pose.header.stamp: how old the newest scan in
 a published observation is (sim seconds).
 """
+import math
 from collections import deque
 
 import rclpy
@@ -41,7 +43,7 @@ from fleetgraph_interfaces.msg import SceneEntity, SceneObservation, SceneRelati
 from fleetgraph_robot import contract
 from fleetgraph_robot.lidar_obstacles import obstacle_detections
 from fleetgraph_robot.perception import (
-    coverage, localization_score, occupancy_from_grid, semantic_detections)
+    MapMatcher, coverage, localization_score, occupancy_from_grid, semantic_detections)
 from fleetgraph_robot.regions import load_regions
 from fleetgraph_robot.scene_graph import LocalSceneGraph
 
@@ -122,14 +124,12 @@ class Perception(Node):
             ('map_frame', 'map'),
             ('base_frame', 'base_footprint'),
             ('tf_timeout_sec', 0.5),
-            # AMCL runs up to 0.1 m and 1.5 deg off ground truth while driving
-            # (measured 2026-11-08), which puts wall returns up to ~0.2 m off
-            # the mapped walls at 4 m. So lidar evidence counts only within
-            # obstacle_range (m), and returns within map_tolerance (m) of a
-            # mapped cell count as the map: obstacles that close to mapped
-            # structure are left to Nav2's costmaps and the semantic detector.
+            # The corrected lidar pose is still ~0.05 m and 1 deg off, which
+            # shifts wall returns by up to ~0.12 m at 4 m: lidar evidence counts
+            # within obstacle_range (m), and returns within map_tolerance (m)
+            # of a mapped cell count as the map.
             ('obstacle_range', 4.0),
-            ('map_tolerance', 0.3),
+            ('map_tolerance', 0.2),
         ])
         self.params = {parameter.name: parameter.value for parameter in declared}
         self.robot_id = self.params['robot_id']
@@ -150,6 +150,7 @@ class Perception(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self._occupancy = None
+        self._matcher = None
         self._scans = deque()
         self._detections = deque()          # (sensing time, frame_id, entities)
         self._sensor_pose = None            # base pose at the newest integrated scan
@@ -162,6 +163,7 @@ class Perception(Node):
             ('scans', 'scans_dropped', 'detections', 'detections_dropped', 'published'), 0)
         self._latency_sum = 0.0
         self._latency_max = 0.0
+        self._correction_max = (0.0, 0.0)  # m, rad: largest MapMatcher correction
         self._region_count = len(regions)
 
         self.create_timer(RETRY_PERIOD_SEC, self._integrate_ready)
@@ -176,6 +178,7 @@ class Perception(Node):
         except ValueError as error:
             self.get_logger().error(f'map ignored: {error}')
             return
+        self._matcher = MapMatcher(self._occupancy)
         self.get_logger().info(
             f'map {msg.info.width}x{msg.info.height} cells of {msg.info.resolution:.2f} m')
 
@@ -217,13 +220,18 @@ class Perception(Node):
     def _integrate(self, scan, stamp):
         map_frame = self.params['map_frame']
         try:
-            lidar = _pose2d(self.tf_buffer.lookup_transform(map_frame, scan.header.frame_id,
-                                                            stamp))
+            amcl = _pose2d(self.tf_buffer.lookup_transform(map_frame, scan.header.frame_id,
+                                                           stamp))
             base = self.tf_buffer.lookup_transform(map_frame, self.params['base_frame'], stamp)
         except TransformException as error:
             self.get_logger().warn(f'scan dropped: {error}', throttle_duration_sec=10.0)
             self._counts['scans_dropped'] += 1
             return
+        lidar = self._matcher.refine(scan.ranges, scan.angle_min, scan.angle_increment,
+                                     scan.range_min, scan.range_max, amcl)
+        shift = math.hypot(lidar[0] - amcl[0], lidar[1] - amcl[1])
+        self._correction_max = (max(self._correction_max[0], shift),
+                                max(self._correction_max[1], abs(lidar[2] - amcl[2])))
         now = _seconds(stamp)
         range_max = min(scan.range_max, self.params['obstacle_range'])
         detections = obstacle_detections(
@@ -284,9 +292,11 @@ class Perception(Node):
         latency = (f'latency mean {self._latency_sum / counts["published"]:.3f} s, '
                    f'max {self._latency_max:.3f} s' if counts['published'] else 'no latency yet')
         tracks = len(self.graph.entities()) - self._region_count
+        shift, turn = self._correction_max
         self.get_logger().info(
-            f'scans {counts["scans"]} integrated, {counts["scans_dropped"]} dropped; '
-            f'detections {counts["detections"]} used, {counts["detections_dropped"]} dropped; '
+            f'scans {counts["scans"]} integrated, {counts["scans_dropped"]} dropped, pose '
+            f'correction max {shift:.2f} m {math.degrees(turn):.1f} deg; detections '
+            f'{counts["detections"]} used, {counts["detections_dropped"]} dropped; '
             f'{tracks} entities reported; observations {counts["published"]}, {latency}')
 
 
