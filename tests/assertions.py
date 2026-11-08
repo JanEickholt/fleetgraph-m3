@@ -234,3 +234,159 @@ def task_sequence(view, task_id, states, topic='/fleet/task_update', **_):
         return None
     return (f"task {task_id}: expected order {states}, history {history} "
             f"(missing from {states[matched]})")
+
+
+# ---------------------------------------------------------- scene graph
+# Mirror of fleetgraph_interfaces/msg/SceneEntity CATEGORY_*
+# (unit/test_central_assertions.py checks it against the generated message).
+SCENE_CATEGORIES = {'PLACE': 0, 'TRAVERSABLE': 1, 'OBSTACLE': 2, 'PERSON': 3,
+                    'GROUP': 4, 'OBJECT': 5, 'ROBOT': 6}
+_CATEGORY_NAMES = {value: name for name, value in SCENE_CATEGORIES.items()}
+
+
+def _graph_states(stream):
+    """[(t, {id: SceneEntity})] after each recorded SceneGraphUpdate: a
+    snapshot replaces the graph, a delta changes it. Versions are not
+    checked here (graph_versions_consistent does)."""
+    states, nodes = [], {}
+    for timestamp, msg in stream:
+        nodes = {} if msg.is_snapshot else dict(nodes)
+        nodes.update((entity.id, entity) for entity in [*msg.added_nodes, *msg.updated_nodes])
+        for entity_id in msg.removed_node_ids:
+            nodes.pop(entity_id, None)
+        states.append((timestamp, nodes))
+    return states
+
+
+def _in_force_from(states, t):
+    """The states in force at or after window time t; the one already in
+    force at t is re-stamped t."""
+    earlier = [(t, nodes) for timestamp, nodes in states if timestamp <= t][-1:]
+    return earlier + [(timestamp, nodes) for timestamp, nodes in states if timestamp > t]
+
+
+def _attributes(entity):
+    return {pair.key: pair.value for pair in entity.attributes}
+
+
+def _matches(entity, category, x, y, tol, sources, attribute):
+    attributes = _attributes(entity)
+    return (entity.category == SCENE_CATEGORIES[category]
+            and _distance_xy(entity.position, x, y) <= float(tol)
+            and set(sources or ()) <= set(entity.source_ids)
+            and all(attributes.get(str(key)) == str(value)
+                    for key, value in (attribute or {}).items()))
+
+
+def _describe(entity):
+    position = entity.position
+    return (f"{entity.id} at ({float(position.x):.2f}, {float(position.y):.2f}) "
+            f"{_CATEGORY_NAMES.get(entity.category, entity.category)} "
+            f"sources {list(entity.source_ids)} attributes {_attributes(entity)}")
+
+
+def _wanted(category, x, y, tol, sources, attribute):
+    wanted = f"{category} within {tol} of ({x}, {y})"
+    if sources:
+        wanted += f" with sources {list(sources)}"
+    if attribute:
+        wanted += f" with attributes {dict(attribute)}"
+    return wanted
+
+
+@register
+def graph_has(view, topic, category, x, y, tol, sources=None, attribute=None,
+              within_sec=None, after_sec=None, **_):
+    """Some graph state reconstructed from `topic` (SceneGraphUpdate deltas
+    and snapshots, e.g. a replica's snapshot topic) holds an entity of
+    `category` within tol of (x, y), fed by every robot in `sources` and
+    carrying every `attribute` key/value. Only states in force at or after
+    after_sec count; the first match must come by window time within_sec."""
+    stream = view.stream(topic)
+    if not stream:
+        return f"no messages on {topic}"
+    states = _graph_states(stream)
+    if after_sec is not None:
+        states = _in_force_from(states, float(after_sec))
+    for timestamp, nodes in states:
+        if any(_matches(entity, category, x, y, tol, sources, attribute)
+               for entity in nodes.values()):
+            if within_sec is not None and timestamp > float(within_sec):
+                return (f"{_wanted(category, x, y, tol, sources, attribute)} on {topic} "
+                        f"only at t={timestamp:.1f}s > {within_sec}s")
+            return None
+    candidates = [(_distance_xy(entity.position, x, y), timestamp, entity)
+                  for timestamp, nodes in states for entity in nodes.values()
+                  if entity.category == SCENE_CATEGORIES[category]]
+    where = topic if after_sec is None else f"{topic} at or after t={float(after_sec)}s"
+    if not candidates:
+        return f"no {category} ever in the graph on {where}"
+    distance, timestamp, entity = min(candidates, key=lambda candidate: candidate[:2])
+    return (f"no {_wanted(category, x, y, tol, sources, attribute)} on {where}; "
+            f"nearest: {_describe(entity)}, distance {distance:.2f}, t={timestamp:.1f}s")
+
+
+@register
+def graph_lacks_after(view, topic, category, x, y, tol, t, sources=None, attribute=None, **_):
+    """No graph state reconstructed from `topic` that is in force at or
+    after window time t holds an entity matching as in graph_has. Fails on
+    an empty stream: a silent topic proves no absence."""
+    stream = view.stream(topic)
+    if not stream:
+        return f"no messages on {topic}"
+    for timestamp, nodes in _in_force_from(_graph_states(stream), float(t)):
+        for entity in nodes.values():
+            if _matches(entity, category, x, y, tol, sources, attribute):
+                return (f"{_describe(entity)} still in the graph at t={timestamp:.1f}s "
+                        f">= {t}s on {topic}")
+    return None
+
+
+@register
+def graph_versions_consistent(view, topic, **_):
+    """Every recorded delta applies on top of the message before it:
+    base_version = previous graph_version and graph_version = base_version
+    + 1. A snapshot restarts the chain; the first delta may start anywhere
+    (recorder joined late)."""
+    stream = view.stream(topic)
+    if not stream:
+        return f"no messages on {topic}"
+    previous = None
+    for timestamp, msg in stream:
+        if not msg.is_snapshot:
+            step = f"delta {msg.base_version}->{msg.graph_version} at t={timestamp:.1f}s"
+            if previous is not None and msg.base_version != previous:
+                return f"{topic}: {step} does not follow version {previous}"
+            if msg.graph_version != msg.base_version + 1:
+                return f"{topic}: {step} is not +1"
+        previous = msg.graph_version
+    return None
+
+
+@register
+def graph_matches(view, topic, reference, tol=0.01, **_):
+    """The final graph reconstructed from `topic` equals the final one from
+    `reference`: same graph_version and the same entities (id, category,
+    sources, attributes, position within tol)."""
+    finals = {}
+    for name in (topic, reference):
+        stream = view.stream(name)
+        if not stream:
+            return f"no messages on {name}"
+        finals[name] = (stream[-1][1].graph_version, _graph_states(stream)[-1][1])
+    (version, nodes), (expected_version, expected) = finals[topic], finals[reference]
+    if version != expected_version:
+        return f"{topic} final version {version} != reference version {expected_version}"
+    differences = [f"missing {entity_id}" for entity_id in sorted(set(expected) - set(nodes))]
+    differences += [f"unexpected {entity_id}" for entity_id in sorted(set(nodes) - set(expected))]
+    if differences:
+        return f"{topic} at version {version}: {', '.join(differences)} (reference {reference})"
+    for entity_id, entity in nodes.items():
+        other = expected[entity_id]
+        same = ((entity.category, list(entity.source_ids), _attributes(entity))
+                == (other.category, list(other.source_ids), _attributes(other)))
+        if not same or _distance_xy(entity.position, other.position.x,
+                                    other.position.y) > float(tol):
+            return (f"{topic} at version {version}: {entity_id} differs: {_describe(entity)} "
+                    f"vs reference {_describe(other)}")
+    return None

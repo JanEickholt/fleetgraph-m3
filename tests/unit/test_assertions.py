@@ -166,6 +166,7 @@ def test_yaw_final_pass_and_fail():
 def test_registry_covers_contract():
     assert set(assertions.REGISTRY) == {
         'publishes', 'min_rate', 'arrives_at', 'never_below', 'final_value',
-        'yaw_final', 'task_state', 'task_sequence', 'seq_contiguous'}
+        'yaw_final', 'task_state', 'task_sequence', 'seq_contiguous',
+        'graph_has', 'graph_lacks_after', 'graph_versions_consistent', 'graph_matches'}
     for name, function in assertions.REGISTRY.items():
         assert function.__name__ == name

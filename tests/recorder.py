@@ -6,9 +6,14 @@ active timebase, never wall time when a sim is present.
 """
 import time
 
+import rclpy.time
+from builtin_interfaces.msg import Time
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
+from rosidl_parser.definition import NamespacedType
+from rosidl_runtime_py.convert import get_message_slot_types
+from rosidl_runtime_py.import_message import import_message_from_namespaced_type
 from rosidl_runtime_py.utilities import get_message
 from rosgraph_msgs.msg import Clock
 
@@ -19,19 +24,31 @@ CONTRACT_QOS = QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE)
 # (a volatile subscriber measurably missed the mock's first events). On
 # volatile-publisher topics a transient_local subscriber would be
 # INCOMPATIBLE (no data at all), hence per topic.
-LATCHED_TOPICS = {'/fleet/task_update', '/fleet/robot_connection'}
+LATCHED_TOPICS = {'/fleet/task_update', '/fleet/robot_connection',
+                  '/fleet/scene_graph_update'}
+LATCHED_SUFFIXES = ('/central/scene',)      # scene_replica, one per robot namespace
 CONTRACT_QOS_LATCHED = QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE,
                                   durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
 def hydrate(msg_class, data):
-    """Build an rclpy message from a (possibly nested) dict."""
+    """Build an rclpy message from a (possibly nested) dict: dicts become
+    nested messages, lists of dicts message sequences, and a number of
+    seconds a builtin_interfaces/Time."""
     msg = msg_class()
+    slot_types = get_message_slot_types(msg)
     for key, value in data.items():
+        field = getattr(msg, key)
         if isinstance(value, dict):
-            setattr(msg, key, hydrate(type(getattr(msg, key)), value))
-        else:
-            setattr(msg, key, value)
+            value = hydrate(type(field), value)
+        elif isinstance(field, Time) and isinstance(value, (int, float)):
+            value = rclpy.time.Time(nanoseconds=round(value * 1e9)).to_msg()
+        elif isinstance(value, list):
+            element_type = getattr(slot_types[key], 'value_type', None)
+            if isinstance(element_type, NamespacedType):
+                element_class = import_message_from_namespaced_type(element_type)
+                value = [hydrate(element_class, item) for item in value]
+        setattr(msg, key, value)
     return msg
 
 
@@ -81,7 +98,7 @@ class Recorder(Node):
         # come in bursts (mock M1 emits RECEIVED/PARSED/QUEUED for several
         # tasks in one tick): a best-effort depth-5 subscriber measurably
         # lost events (2026-10-29). Record them reliable with a deep queue.
-        if topic in LATCHED_TOPICS:
+        if topic in LATCHED_TOPICS or topic.endswith(LATCHED_SUFFIXES):
             qos = CONTRACT_QOS_LATCHED
         elif topic.startswith('/fleet/'):
             qos = CONTRACT_QOS
