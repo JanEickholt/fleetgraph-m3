@@ -24,6 +24,20 @@ def to_map(pose: Pose, x: float, y: float) -> tuple[float, float]:
     return (origin_x + cos_yaw * x - sin_yaw * y, origin_y + sin_yaw * x + cos_yaw * y)
 
 
+def compose(pose: Pose, inner: Pose) -> Pose:
+    """inner, a pose given in the frame at pose -> the frame pose is given in."""
+    return (*to_map(pose, inner[0], inner[1]), pose[2] + inner[2])
+
+
+def map_correction(observed: Pose, corrected: Pose) -> Pose:
+    """The map-frame transform C with compose(C, observed) == corrected. All
+    TF map poses go through AMCL's map -> odom, so the error MapMatcher finds
+    at the lidar also corrects the robot's other frames: compose(C, pose)."""
+    turn = corrected[2] - observed[2]
+    turned_x, turned_y = to_map((0.0, 0.0, turn), observed[0], observed[1])
+    return (corrected[0] - turned_x, corrected[1] - turned_y, turn)
+
+
 class MapMatcher:
     """Corrects a lidar pose by a small correlative scan match against the
     static map (after Olson 2009): of the poses within reach of the given

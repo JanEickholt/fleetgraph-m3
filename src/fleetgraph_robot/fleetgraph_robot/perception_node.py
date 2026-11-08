@@ -45,8 +45,8 @@ from fleetgraph_interfaces.msg import SceneEntity, SceneObservation, SceneRelati
 from fleetgraph_robot import contract
 from fleetgraph_robot.lidar_obstacles import obstacle_detections
 from fleetgraph_robot.perception import (
-    SEMANTIC_SOURCE, MapMatcher, any_view, detector_coverage, lidar_coverage,
-    localization_score, occupancy_from_grid, semantic_detections)
+    SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
+    localization_score, map_correction, occupancy_from_grid, semantic_detections)
 from fleetgraph_robot.regions import load_regions
 from fleetgraph_robot.scene_graph import LIDAR_SOURCE, LocalSceneGraph
 
@@ -246,22 +246,25 @@ class Perception(Node):
             scan.ranges, scan.angle_min, scan.angle_increment, scan.range_min, range_max,
             lidar, self._occupancy, stamp=now, tolerance=self.params['map_tolerance'])
         coverage = {LIDAR_SOURCE: lidar_coverage(self._occupancy, lidar[0], lidar[1], range_max)}
-        semantic, views = self._semantic_until(stamp)
+        semantic, views = self._semantic_until(stamp, map_correction(amcl, lidar))
         if views:
             coverage[SEMANTIC_SOURCE] = any_view(views)
         self.graph.integrate(detections + semantic, now, coverage)
         self._sensor_pose = pose_stamped(base)
         self._counts['scans'] += 1
 
-    def _semantic_until(self, stamp):
+    def _semantic_until(self, stamp, correction):
         """Map-frame detections of the messages sensed up to stamp, and the
         coverage of each of those frames (also of empty ones)."""
         detections, views = [], []
         while self._detections and self._detections[0][0] <= stamp:
             sensed, frame_id, entities = self._detections.popleft()
             try:
-                pose = _pose2d(self.tf_buffer.lookup_transform(
-                    self.params['map_frame'], frame_id, sensed))
+                # The correction of the scan they join, the first at or after their
+                # stamp (<= 0.1 s later), not one interpolated to it: AMCL's map ->
+                # odom changes in steps at its filter updates, rarely in between.
+                pose = compose(correction, _pose2d(self.tf_buffer.lookup_transform(
+                    self.params['map_frame'], frame_id, sensed)))
             except TransformException as error:
                 self.get_logger().warn(f'detections dropped: {error}',
                                        throttle_duration_sec=10.0)

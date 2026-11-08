@@ -14,8 +14,8 @@ import yaml
 
 from fleetgraph_robot.lidar_obstacles import OccupancyMap, obstacle_detections
 from fleetgraph_robot.perception import (
-    SEMANTIC_SOURCE, MapMatcher, any_view, detector_coverage, lidar_coverage,
-    localization_score, occupancy_from_grid, semantic_detections, to_map)
+    SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
+    localization_score, map_correction, occupancy_from_grid, semantic_detections, to_map)
 from fleetgraph_robot.regions import load_regions
 from fleetgraph_robot.scene_graph import Category, Delta, Entity, Predicate, Relation
 
@@ -81,6 +81,41 @@ def test_to_map_rotates_then_translates():
     assert to_map((2.0, 3.0, 0.0), 1.0, 1.0) == (3.0, 4.0)
     x, y = to_map((2.0, 3.0, math.pi / 2), 1.0, 0.5)       # x forward = +y in the map
     assert (x, y) == pytest.approx((1.5, 4.0))
+
+
+def test_compose_chains_frames():
+    assert compose((2.0, 3.0, math.pi / 2), (1.0, 0.5, 0.25)) == \
+        pytest.approx((1.5, 4.0, math.pi / 2 + 0.25))
+    assert compose((0.0, 0.0, 0.0), (1.0, 2.0, 0.5)) == (1.0, 2.0, 0.5)
+
+
+def test_map_correction_maps_the_observed_pose_onto_the_corrected_one():
+    for observed, corrected in (((6.0, 1.2, 0.1), (6.08, 1.13, 0.14)),
+                                ((-0.5, 2.0, 3.0), (-0.45, 2.1, 2.95)),
+                                ((1.0, 1.0, 0.0), (1.0, 1.0, 0.0))):
+        assert compose(map_correction(observed, corrected), observed) == \
+            pytest.approx(corrected)
+
+
+# AMCL's error lives in map -> odom: a map-frame transform applied to every
+# TF pose. The lidar sits 0.1 m ahead of base_footprint, the detections'
+# frame (fleetgraph_sim robot.urdf.xacro).
+LIDAR_IN_BASE = (0.1, 0.0, 0.0)
+
+
+def test_the_lidar_correction_moves_detections_onto_the_truth():
+    base = (4.5, 1.4, -0.3)                                 # true base_footprint pose
+    error = (0.12, -0.09, math.radians(3.0))                # AMCL map -> odom error
+    amcl_lidar = compose(error, compose(base, LIDAR_IN_BASE))
+    amcl_base = compose(error, base)
+    correction = map_correction(amcl_lidar, compose(base, LIDAR_IN_BASE))  # perfect match
+    assert compose(correction, amcl_base) == pytest.approx(base)
+    seen = [detected('PERSON', 4.0, 1.0)]                   # 4.1 m ahead, left of the robot
+    truth = to_map(base, 4.0, 1.0)
+    (placed,) = semantic_detections(seen, compose(correction, amcl_base), stamp=3.0)
+    (uncorrected,) = semantic_detections(seen, amcl_base, stamp=3.0)
+    assert (placed.x, placed.y) == pytest.approx(truth)
+    assert math.dist((uncorrected.x, uncorrected.y), truth) > 0.25
 
 
 # Room x 0..4, y 0..2 at 0.1 m with a wall column at x = 2.0..2.1 from y = 0
@@ -210,6 +245,33 @@ def test_corrected_pose_leaves_only_the_crate(lab):
     assert len(obstacles(guess)) > 1        # walls in free cells
     (crate,) = obstacles(matcher.refine(ranges, angle_min, increment, *limits, guess))
     assert math.hypot(crate.x - 2.5, crate.y - 0.8) < 0.15
+
+
+def test_scan_match_correction_places_detections_within_the_match_accuracy(lab):
+    """MapMatcher on the lab world corrects the detector pose with the
+    lidar's: a person 3 m ahead of the robot lands within the match error
+    (0.06 m, 1.25 deg -> 0.06 + 3 * tan(1.25 deg) = 0.13 m)."""
+    _, boxes, matcher, limits, raycast = lab
+
+    def error(detector_pose, truth):
+        (person,) = semantic_detections([detected('PERSON', 3.0, 0.0)], detector_pose, 0.0)
+        return math.dist((person.x, person.y), truth)
+
+    corrected, uncorrected = [], []
+    for lidar_truth in ROUTE:
+        base = compose(lidar_truth, (-LIDAR_IN_BASE[0], 0.0, 0.0))
+        truth = to_map(base, 3.0, 0.0)
+        angle_min, increment, ranges = raycast(lidar_truth, boxes)
+        for dx, dy, dyaw in POSE_ERRORS:
+            amcl_lidar = shifted(lidar_truth, dx, dy, dyaw)
+            amcl_base = compose(map_correction(lidar_truth, amcl_lidar), base)
+            refined = matcher.refine(ranges, angle_min, increment, *limits, amcl_lidar)
+            corrected.append(error(compose(map_correction(amcl_lidar, refined), amcl_base), truth))
+            uncorrected.append(error(amcl_base, truth))
+    print(f'\nperson 3 m ahead: worst {max(corrected):.3f} m corrected, '
+          f'{max(uncorrected):.3f} m uncorrected')
+    assert max(corrected) <= 0.13
+    assert max(uncorrected) > 2 * max(corrected)
 
 
 def test_map_matcher_is_fast_enough_for_10_hz_scans(lab):

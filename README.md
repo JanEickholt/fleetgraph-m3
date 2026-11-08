@@ -93,8 +93,10 @@ $R ros2 run fleetgraph_robot perception --ros-args -r __ns:=/robot_1 -p robot_id
   0.14 m and 3° off while driving) is corrected by a small scan match against the static
   map (`perception.MapMatcher`, ±0.25 m, ±5°); otherwise wall returns land in free cells.
   Lidar evidence counts within `obstacle_range` (4.0 m), farther than `map_tolerance`
-  (0.2 m) from mapped cells. Detections are placed with TF at their own stamp; each
-  detection message is one detector frame, folded into the next scan's update.
+  (0.2 m) from mapped cells. Detections are placed with TF at their own stamp plus the
+  MapMatcher correction of the scan they join (the first at or after their stamp), since
+  both poses go through AMCL's map → odom; each detection message is one detector frame,
+  folded into that scan's update.
 - Coverage is per sensor: a track decays (confidence × 0.7) only on a frame of a sensor
   that has detected it before and could see it then. Scan: within `obstacle_range`, static
   line of sight. Detector frame (also an empty one): within `detector_range` (6 m) and
