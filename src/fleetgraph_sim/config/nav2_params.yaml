@@ -11,6 +11,7 @@
 #  - collision_monitor scan min_height 0.05 (the default 0.15 sits just
 #    below our 0.19 m scan plane — kept low so a lower mount stays covered)
 #  - velocity limits match the gz DiffDrive (1.0 m/s^2, 2.0 rad/s^2)
+#  - map_saver free_thresh_default 0.196 as tools/gen_world.py writes maps
 #  - one stack per robot in namespace /robot_N (nav.launch.py): topics are
 #    relative; costmap layers live one namespace deeper, so their scan topic
 #    is <robot_namespace>/scan (nav2_bringup substitutes /robot_N)
@@ -221,7 +222,7 @@ global_costmap:
 map_saver:
   ros__parameters:
     save_map_timeout: 5.0
-    free_thresh_default: 0.25
+    free_thresh_default: 0.196   # FleetGraph: as tools/gen_world.py (205 pixels: unknown)
     occupied_thresh_default: 0.65
     map_subscribe_transient_local: True
 
