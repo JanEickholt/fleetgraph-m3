@@ -111,8 +111,12 @@ $R ros2 run fleetgraph_robot perception --ros-args -r __ns:=/robot_1 -p robot_id
   integrated scan. Region nodes come in the first message only. `confidence` is the AMCL
   localization score (as in RobotState), 1.0 before the first `amcl_pose`.
 - Latency = `meta.stamp - sensor_pose.header.stamp` (sim s): the age of the newest scan in
-  an observation when it is published. `weekly_perception_crate` asserts < 0.5 s; the node
-  logs mean and max every 10 s.
+  an observation when it is published. `weekly_perception_crate` and
+  `weekly_perception_scenes` assert < 0.5 s; the node logs mean and max every 10 s.
+- End to end: `weekly_perception_crate` (robot_1 past the unmapped crate) and
+  `weekly_perception_scenes` (three robots, scene `group_hall_person_lab1`: persons, the
+  group, a visitor INSIDE lab_1 and its removal, obstacles only where something unmapped
+  stands, gap-free deltas per robot).
 - Other parameters: `regions_file`, `map_frame` (map), `base_frame` (base_footprint),
   `tf_timeout_sec` (0.5: a scan whose TF is later than that is dropped).
 
