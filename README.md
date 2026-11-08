@@ -102,7 +102,10 @@ $R ros2 run fleetgraph_robot perception --ros-args -r __ns:=/robot_1 -p robot_id
   line of sight. Detector frame (also an empty one): within `detector_range` (6 m) and
   `detector_fov_deg` (120°) around the x axis of its `frame_id` at that frame's stamp,
   static line of sight. So a person only the camera sees does not decay between camera
-  frames, and a lidar-only obstacle does not decay on camera frames.
+  frames, and a lidar-only obstacle does not decay on camera frames. Both need the whole
+  footprint in view: the track and both sides `coverage_half_width` (0.2 m) across the
+  line of sight. A track the map hides in part is no miss (the crate seen past the lab_1
+  door frame gave 2 returns, too few for a cluster, while its centre was in sight).
 - Published at `publish_rate_hz` (2.0) when the delta has entities, removals or a changed
   relation set, otherwise at least every `heartbeat_sec` (5.0); nothing before the first
   integrated scan. Region nodes come in the first message only. `confidence` is the AMCL

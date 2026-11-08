@@ -119,32 +119,50 @@ def _dilated(mask, reach_cells):
 
 
 def lidar_coverage(occupancy: OccupancyMap, sensor_x: float, sensor_y: float,
-                   max_range: float) -> InView:
+                   max_range: float, half_width: float = 0.0) -> InView:
     """in_view(x, y) of one 360 deg lidar scan for LocalSceneGraph.integrate:
     within max_range of the sensor and a line of sight through the STATIC
-    map. Unmapped obstacles do not shadow: a track hidden behind one decays
-    too."""
-    def in_view(x, y):
+    map, for the point and, with half_width, both sides of a footprint that
+    wide across the line of sight. A track the map hides in part is no
+    miss: its centre estimate drifts toward the part the scan sees, so a
+    crate seen past a door frame kept its centre in sight while the jamb
+    left too few returns for a cluster. Unmapped obstacles do not shadow: a
+    track hidden behind one decays too."""
+    def sees(x, y):
         return (math.hypot(x - sensor_x, y - sensor_y) <= max_range
                 and occupancy.line_of_sight(sensor_x, sensor_y, x, y))
-    return in_view
+    return _whole(sees, sensor_x, sensor_y, half_width)
 
 
 def detector_coverage(occupancy: OccupancyMap, pose: Pose, fov_deg: float,
-                      max_range: float) -> InView:
+                      max_range: float, half_width: float = 0.0) -> InView:
     """in_view(x, y) of one semantic detector frame taken from pose (the
     detector looks along its x axis): within max_range, inside the
     horizontal field of view and a line of sight through the static map,
-    as the simulated detector decides visibility (detector_model)."""
+    as the simulated detector decides visibility (detector_model); with
+    half_width for the whole footprint, as in lidar_coverage."""
     sensor_x, sensor_y, yaw = pose
     half_fov = math.radians(fov_deg) / 2
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
 
-    def in_view(x, y):
+    def sees(x, y):
         dx, dy = x - sensor_x, y - sensor_y
-        bearing = math.atan2(math.cos(yaw) * dy - math.sin(yaw) * dx,
-                             math.cos(yaw) * dx + math.sin(yaw) * dy)
+        bearing = math.atan2(cos_yaw * dy - sin_yaw * dx, cos_yaw * dx + sin_yaw * dy)
         return (math.hypot(dx, dy) <= max_range and abs(bearing) <= half_fov
                 and occupancy.line_of_sight(sensor_x, sensor_y, x, y))
+    return _whole(sees, sensor_x, sensor_y, half_width)
+
+
+def _whole(sees, sensor_x, sensor_y, half_width):
+    """in_view: sees() the point and, for half_width > 0, the two sides of
+    a footprint that wide across the line of sight from the sensor."""
+    def in_view(x, y):
+        dx, dy = x - sensor_x, y - sensor_y
+        distance = math.hypot(dx, dy)
+        if half_width <= 0 or distance == 0:
+            return sees(x, y)
+        side_x, side_y = -dy * half_width / distance, dx * half_width / distance
+        return sees(x, y) and sees(x + side_x, y + side_y) and sees(x - side_x, y - side_y)
     return in_view
 
 

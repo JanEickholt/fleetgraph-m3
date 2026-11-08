@@ -105,6 +105,11 @@ class Perception(Node):
             # the simulated detector (fleetgraph_sim_tools DetectorParams).
             ('detector_fov_deg', 120.0),
             ('detector_range', 6.0),
+            # A frame covers a track (an unmatched one decays) only if the
+            # line of sight reaches both sides of a footprint this half-width
+            # (m, a crate's) across it too: a track the map hides in part,
+            # e.g. seen past a door frame, is no miss.
+            ('coverage_half_width', 0.2),
         ])
         self.params = {parameter.name: parameter.value for parameter in declared}
         self.robot_id = self.params['robot_id']
@@ -212,7 +217,8 @@ class Perception(Node):
         detections = obstacle_detections(
             scan.ranges, scan.angle_min, scan.angle_increment, scan.range_min, range_max,
             lidar, self._occupancy, stamp=now, tolerance=self.params['map_tolerance'])
-        coverage = {LIDAR_SOURCE: lidar_coverage(self._occupancy, lidar[0], lidar[1], range_max)}
+        coverage = {LIDAR_SOURCE: lidar_coverage(self._occupancy, lidar[0], lidar[1], range_max,
+                                                 self.params['coverage_half_width'])}
         semantic, views = self._semantic_until(stamp, map_correction(amcl, lidar))
         if views:
             coverage[SEMANTIC_SOURCE] = any_view(views)
@@ -242,7 +248,8 @@ class Perception(Node):
             self._counts['detections_dropped'] += len(entities) - len(placed)
             detections += placed
             views.append(detector_coverage(self._occupancy, pose, self.params['detector_fov_deg'],
-                                           self.params['detector_range']))
+                                           self.params['detector_range'],
+                                           self.params['coverage_half_width']))
         return detections, views
 
     # ------------------------------------------------------------- output

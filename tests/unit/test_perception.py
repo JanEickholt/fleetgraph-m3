@@ -18,7 +18,7 @@ from fleetgraph_robot.perception import (
     SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
     localization_score, map_correction, occupancy_from_grid, semantic_detections, to_map)
 from fleetgraph_robot.regions import load_regions
-from fleetgraph_robot.scene_graph import Category
+from fleetgraph_robot.scene_graph import LIDAR_SOURCE, Category, Detection, LocalSceneGraph
 
 import test_lidar_obstacles as lidar_tests                 # lab world, raycast
 
@@ -156,6 +156,18 @@ def test_any_view_covers_what_one_of_the_frames_covers():
     assert not any_view([])(0.0, 0.0)
 
 
+def test_coverage_with_a_half_width_needs_both_sides_of_the_footprint_in_sight():
+    # just over the top of the wall column: the centre is in sight, the lower
+    # side 0.2 m across the line of sight is behind the column
+    assert lidar_coverage(room(), 0.5, 1.55, 4.0)(3.5, 1.55)
+    assert not lidar_coverage(room(), 0.5, 1.55, 4.0, half_width=0.2)(3.5, 1.55)
+    assert lidar_coverage(room(), 0.5, 1.55, 4.0, half_width=0.2)(1.5, 1.0)    # open floor
+    looking = (0.5, 1.55, 0.0)
+    assert detector_coverage(room(), looking, 120.0, 4.0)(3.5, 1.55)
+    assert not detector_coverage(room(), looking, 120.0, 4.0, half_width=0.2)(3.5, 1.55)
+    assert detector_coverage(room(), looking, 120.0, 4.0, half_width=0.2)(1.5, 1.0)
+
+
 def grid(origin_yaw=0.0):
     orientation = SimpleNamespace(x=0.0, y=0.0, z=math.sin(origin_yaw / 2),
                                   w=math.cos(origin_yaw / 2))
@@ -273,6 +285,39 @@ def test_scan_match_correction_places_detections_within_the_match_accuracy(lab):
           f'{max(uncorrected):.3f} m uncorrected')
     assert max(corrected) <= 0.13
     assert max(uncorrected) > 2 * max(corrected)
+
+
+# Where robot_1 parks in lab_1 the door's south jamb hides the crate but for a
+# sliver, and the lidar-only track's centre estimate had drifted 0.19 m toward
+# that visible corner (replayed from a weekly_perception_crate run, 2026-11-08).
+PARKED_IN_LAB_1 = (5.85, 1.3, 0.0)
+DRIFTED_CRATE = (2.64, 0.93)
+
+
+def test_crate_seen_past_the_door_frame_is_no_miss(lab):
+    occupancy, boxes, _, limits, raycast = lab
+    angle_min, increment, ranges = raycast(PARKED_IN_LAB_1, boxes)
+    x, y, _ = PARKED_IN_LAB_1
+    assert obstacle_detections(ranges, angle_min, increment, limits[0], 4.0, PARKED_IN_LAB_1,
+                               occupancy, stamp=0.0, tolerance=0.2) == []
+    centre_only = lidar_coverage(occupancy, x, y, 4.0)
+    whole = lidar_coverage(occupancy, x, y, 4.0, half_width=0.2)
+    assert centre_only(*DRIFTED_CRATE) and not whole(*DRIFTED_CRATE)
+    from_the_hall = lidar_coverage(occupancy, 1.0, 0.0, 4.0, half_width=0.2)
+    assert from_the_hall(*DRIFTED_CRATE) and from_the_hall(2.5, 0.8)   # all of it in sight
+
+    def crate_after_ten_scans(coverage):
+        graph = LocalSceneGraph('robot_1', [])
+        seen = Detection(Category.OBSTACLE, *DRIFTED_CRATE, size=(0.2, 0.2, 0.0),
+                         confidence=0.75, label='unknown', source=LIDAR_SOURCE)
+        for scan in range(5):
+            graph.integrate([seen], scan * 0.1, {LIDAR_SOURCE: from_the_hall})
+        for scan in range(5, 15):                       # parked: the sliver gives no cluster
+            graph.integrate([], scan * 0.1, {LIDAR_SOURCE: coverage})
+        return graph.entities()
+
+    assert len(crate_after_ten_scans(whole)) == 1
+    assert crate_after_ten_scans(centre_only) == []     # removed after 0.7 s, crate still there
 
 
 def test_map_matcher_is_fast_enough_for_10_hz_scans(lab):
