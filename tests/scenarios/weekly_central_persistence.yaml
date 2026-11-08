@@ -1,0 +1,55 @@
+name: weekly_central_persistence
+# Temporary vs persistent blockages in the mock Module 1 graph. No sim (wall
+# time); the synthetic observations are unstamped, so the central graph
+# dates them by receipt: first_seen = first heard. persistent_after_sec 8 and
+# an obstacle ttl of 3 s keep the window short. Obstacle A (robot_1, reported
+# from 2 s on) is "temporary" first and "persistent" from 8 s after it was
+# first heard, so never before 10 s. Obstacle B (robot_2, reported from 3 to
+# 4.5 s only) stays "temporary" and expires about 3 s after its last report,
+# before it could turn persistent at 11 s.
+topics:
+  /fleet/scene_graph_update: fleetgraph_interfaces/msg/SceneGraphUpdate
+actions:
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: mock_central,
+                 args: "--ros-args -p persistent_after_sec:=8.0 -p ttl_sec.obstacle:=3.0"}}
+  - t: 2
+    publish:
+      t: 2
+      duration: 16
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_1
+        frame_id: map
+        entities:     # category 2 = OBSTACLE
+          - {id: robot_1/obstacle/1, category: 2, label: crate,
+             position: {x: 2.5, y: 0.8}, confidence: 0.9}
+  - t: 3
+    publish:
+      t: 3
+      duration: 1.5
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_2
+        frame_id: map
+        entities:
+          - {id: robot_2/obstacle/1, category: 2, label: box,
+             position: {x: 6.0, y: -1.5}, confidence: 0.9}
+window_sec: 20
+assert:
+  - graph_has: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 2.5, y: 0.8, tol: 0.2,
+                attribute: {persistence: temporary}, within_sec: 4}
+  - graph_has: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 2.5, y: 0.8, tol: 0.2,
+                attribute: {persistence: temporary}, after_sec: 9.5}
+  - graph_has: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 2.5, y: 0.8, tol: 0.2,
+                attribute: {persistence: persistent}, within_sec: 12}
+  - graph_has: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 6.0, y: -1.5, tol: 0.2,
+                sources: [robot_2], attribute: {persistence: temporary}, within_sec: 5}
+  - graph_lacks_after: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 6.0, y: -1.5,
+                        tol: 0.2, attribute: {persistence: persistent}, t: 0}
+  - graph_lacks_after: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 6.0, y: -1.5,
+                        tol: 0.2, t: 10}
+  - graph_versions_consistent: {topic: /fleet/scene_graph_update}

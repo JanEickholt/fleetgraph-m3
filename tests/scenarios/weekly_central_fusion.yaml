@@ -1,0 +1,100 @@
+name: weekly_central_fusion
+# Week-11 gate: robot observations are fused centrally and become visible to
+# another robot. Mock Module 1 (mock_central) fuses synthetic observations of
+# fake robot_1 and robot_2; robot_3 runs only its scene_replica. No sim (wall
+# time); the observations are unstamped, so the central graph dates them by
+# receipt. robot_1 and robot_2 report one obstacle 0.2 m apart -> one global
+# OBSTACLE fed by both; robot_1 removes its track at 9 s -> still there, fed
+# by robot_2 alone; robot_2 removes its own at 11.5 s -> gone. A third report
+# in the odom frame is rejected. Publish actions start at the t inside
+# `publish` (the harness reads the spec's own t).
+topics:
+  /fleet/scene_graph_update: fleetgraph_interfaces/msg/SceneGraphUpdate
+  /robot_3/central/scene: fleetgraph_interfaces/msg/SceneGraphUpdate
+actions:
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: mock_central,
+                 args: "--ros-args -p log_file:=/home/ubuntu/tests/artifacts/weekly_central_fusion.updates.jsonl"}}
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: scene_replica,
+                 args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3"}}
+  - t: 2
+    publish:
+      t: 2
+      duration: 6
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_1
+        frame_id: map
+        entities:     # category 2 = OBSTACLE
+          - {id: robot_1/obstacle/1, category: 2, label: box,
+             position: {x: 3.0, y: 0.5}, confidence: 0.8}
+  - t: 2.5
+    publish:
+      t: 2.5
+      duration: 8
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_2
+        frame_id: map
+        entities:
+          - {id: robot_2/obstacle/4, category: 2, label: box,
+             position: {x: 3.2, y: 0.5}, confidence: 0.6}
+  - t: 2
+    publish:
+      t: 2
+      duration: 3
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_2
+        frame_id: odom
+        entities:
+          - {id: robot_2/obstacle/5, category: 2, position: {x: 6.0, y: -2.0},
+             confidence: 0.9}
+  - t: 9
+    publish:
+      t: 9
+      duration: 1
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg: {robot_id: robot_1, frame_id: map, removed_entity_ids: [robot_1/obstacle/1]}
+  - t: 11.5
+    publish:
+      t: 11.5
+      duration: 1
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg: {robot_id: robot_2, frame_id: map, removed_entity_ids: [robot_2/obstacle/4]}
+window_sec: 15
+assert:
+  # one entity fed by both robots, globally and in robot_3's replica
+  - graph_has: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 3.1, y: 0.5, tol: 0.3,
+                sources: [robot_1, robot_2], within_sec: 5}
+  - graph_has: {topic: /robot_3/central/scene, category: OBSTACLE, x: 3.1, y: 0.5, tol: 0.3,
+                sources: [robot_1, robot_2], within_sec: 6}
+  # robot_1 removed its track at 9 s: still present, fed by robot_2 alone
+  - graph_has: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 3.1, y: 0.5, tol: 0.3,
+                sources: [robot_2], after_sec: 10.5}
+  - graph_lacks_after: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 3.1, y: 0.5,
+                        tol: 0.3, sources: [robot_1], t: 10.5}
+  - graph_has: {topic: /robot_3/central/scene, category: OBSTACLE, x: 3.1, y: 0.5, tol: 0.3,
+                sources: [robot_2], after_sec: 10.5}
+  - graph_lacks_after: {topic: /robot_3/central/scene, category: OBSTACLE, x: 3.1, y: 0.5,
+                        tol: 0.3, sources: [robot_1], t: 10.5}
+  # robot_2 removed its track at 11.5 s: gone
+  - graph_lacks_after: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 3.1, y: 0.5,
+                        tol: 0.5, t: 13}
+  - graph_lacks_after: {topic: /robot_3/central/scene, category: OBSTACLE, x: 3.1, y: 0.5,
+                        tol: 0.5, t: 13}
+  # the odom-frame report never enters the graph
+  - graph_lacks_after: {topic: /fleet/scene_graph_update, category: OBSTACLE, x: 6.0, y: -2.0,
+                        tol: 0.5, t: 0}
+  - graph_versions_consistent: {topic: /fleet/scene_graph_update}
+  - seq_contiguous: {topic: /fleet/scene_graph_update}
+  - graph_matches: {topic: /robot_3/central/scene, reference: /fleet/scene_graph_update}

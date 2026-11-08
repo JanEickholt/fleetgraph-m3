@@ -20,6 +20,8 @@ setup(
         'console_scripts': [
             'agent = fleetgraph_robot.agent_node:main',
             'mock_orchestrator = fleetgraph_robot.mock_orchestrator:main',
+            'mock_central = fleetgraph_robot.mock_central_node:main',
+            'scene_replica = fleetgraph_robot.scene_replica_node:main',
         ],
     },
 )

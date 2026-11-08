@@ -1,0 +1,64 @@
+name: weekly_central_resync
+# A replica that joins late resyncs through the GetSceneGraph service. No sim
+# (wall time). robot_2 reports a static obstacle from 1 s on; robot_1 reports
+# one track alternately at two positions 0.3 m apart (two publishers), so
+# every message moves its global entity and by 7 s the update stream is far
+# longer than the 100-message transient-local history. Periodic snapshots are
+# off: robot_3's replica, started at 7 s while the updates keep coming, can
+# learn the static obstacle only from the service snapshot. It must never
+# publish a graph rebuilt from the incomplete history (versions <= 100) and
+# must end equal to the central graph.
+topics:
+  /fleet/scene_graph_update: fleetgraph_interfaces/msg/SceneGraphUpdate
+  /robot_3/central/scene: fleetgraph_interfaces/msg/SceneGraphUpdate
+actions:
+  - {t: 0, run: {pkg: fleetgraph_robot, exec: mock_central,
+                 args: "--ros-args -p snapshot_period_sec:=0.0"}}
+  - t: 1
+    publish:
+      t: 1
+      duration: 11
+      hz: 2
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_2
+        frame_id: map
+        entities:     # category 2 = OBSTACLE
+          - {id: robot_2/obstacle/1, category: 2, position: {x: 1.0, y: -2.0},
+             confidence: 0.9}
+  - t: 1.5
+    publish:
+      t: 1.5
+      duration: 8.5
+      hz: 20
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_1
+        frame_id: map
+        entities:
+          - {id: robot_1/obstacle/1, category: 2, position: {x: 5.0, y: 1.0},
+             confidence: 0.9}
+  - t: 1.5
+    publish:
+      t: 1.5
+      duration: 8.5
+      hz: 20
+      topic: /fleet/scene_observation
+      type: fleetgraph_interfaces/msg/SceneObservation
+      msg:
+        robot_id: robot_1
+        frame_id: map
+        entities:
+          - {id: robot_1/obstacle/1, category: 2, position: {x: 5.3, y: 1.0},
+             confidence: 0.9}
+  - {t: 7, run: {pkg: fleetgraph_robot, exec: scene_replica,
+                 args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3"}}
+window_sec: 13
+assert:
+  - graph_has: {topic: /robot_3/central/scene, category: OBSTACLE, x: 1.0, y: -2.0, tol: 0.2,
+                sources: [robot_2], within_sec: 11}
+  - never_below: {topic: /robot_3/central/scene, field: graph_version, threshold: 101}
+  - graph_matches: {topic: /robot_3/central/scene, reference: /fleet/scene_graph_update}
+  - graph_versions_consistent: {topic: /fleet/scene_graph_update}

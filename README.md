@@ -68,6 +68,37 @@ script's, else robot_1). Camera sensors: `sim.launch.py camera:=true`. With a di
 - RobotState at 2 Hz (pose from AMCL TF, never ground truth), RobotConnection ONLINE/OFFLINE.
 - Maintenance: `ros2 param set /robot_1/fleetgraph_agent maintenance true`.
 
+## Central scene graph (mock Module 1)
+
+`mock_central` stands in for Module 1's global scene graph: it fuses the robots'
+observations (`central_graph.py`) and serves the graph. `scene_replica` keeps one robot's
+copy of it in sync.
+
+| Interface | Content and QoS |
+|---|---|
+| `/fleet/scene_observation` (in) | `SceneObservation`, reliable, depth 50. Positions must be in `map`; other frames are rejected with a logged reason |
+| `/fleet/scene_graph_update` (out) | one versioned delta per change (`source_robot_id`: whose observation caused it, empty after expiry) and a full snapshot every `snapshot_period_sec` (10 s, 0 = off). Reliable, transient local, depth 100 (`QOS_EVENTS`): live receivers get every delta in order, a late joiner the last 100 messages |
+| `/fleet/get_scene_graph` | `GetSceneGraph`: the current snapshot |
+| `/robot_N/central/scene` (replica out) | the replica's whole graph as a `SceneGraphUpdate` snapshot whenever it changes. Reliable, transient local, depth 1 |
+
+Resync: the replica applies a delta only on top of its own version. After a gap it calls
+the service asynchronously, holds the updates that arrive meanwhile and replays them on the
+snapshot. It asks again after 2 s without a reply; a periodic snapshot also resyncs it.
+Contributions expire at 1 Hz after `ttl_sec.<category>` without a report; obstacles and
+objects carry `persistence: temporary`, then `persistent` after `persistent_after_sec`
+(30 s). All nodes need one clock (`use_sim_time`). Unset (zero) entity stamps count as
+the receipt time, so `first_seen` becomes the time first heard. `log_file`: one JSONL line
+per update, with `latency_sec` = update stamp minus observation stamp.
+
+```bash
+$R ros2 run fleetgraph_robot mock_central --ros-args -p use_sim_time:=true -p log_file:=/tmp/central.jsonl
+$R ros2 run fleetgraph_robot scene_replica --ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 \
+     -p use_sim_time:=true
+$R ros2 topic echo /robot_1/central/scene
+```
+
+`./t -k weekly_central` runs the fusion, persistence and late-join resync scenarios (no sim).
+
 ## Simulation notes
 
 - World "lab_floor" (10 × 6 m): hall with docks/storage, two labs behind 1 m doors, and an
