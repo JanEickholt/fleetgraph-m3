@@ -4,10 +4,12 @@ records, the Gazebo model, the director's playback diff, the shipped scenes
 against the lab world of tools/gen_world.py, and the reproducibility of the
 detector pipeline fed with scene truth.
 """
+import glob
 import importlib.util
 import math
 import os
 import random
+import re
 import xml.etree.ElementTree as ElementTree
 
 import pytest
@@ -228,17 +230,41 @@ def samples(parsed_entity, step=0.1):
             for index in range(int((end - start) / step) + 1)]
 
 
+# derived from the files present: a new scene needs no edit here
 SHIPPED = sorted(name[:-5] for name in os.listdir(SCENES) if name.endswith('.yaml'))
+SCENARIOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scenarios')
 
 
-def test_the_six_scenes_ship_and_declare_the_crate():
-    assert SHIPPED == ['box_front', 'door_lab1_box_temporary', 'group_door_lab1',
-                       'group_hall_person_lab1', 'person_hall', 'walker_hall']
+def test_scenes_ship_under_their_own_name():
+    assert SHIPPED
     for name in SHIPPED:
-        parsed = shipped(name)
-        assert parsed.name == name
-        crate = by_id(parsed, 'crate')      # always in the world: truth and occluder
-        assert crate.preexisting and crate.pose(0.0)[:2] == (2.5, 0.8)
+        assert shipped(name).name == name
+
+
+def test_every_scene_a_scenario_plays_ships():
+    played = set()
+    for path in glob.glob(os.path.join(SCENARIOS, '*.yaml')):
+        with open(path) as file:
+            played |= set(re.findall(r'scene:=([A-Za-z0-9_-]+)', file.read()))
+    assert played and played <= set(SHIPPED)
+
+
+def test_preexisting_entities_are_the_unmapped_world_objects_as_generated():
+    """Truth and occluder: every scene declares each object the world has but
+    the static map lacks (the crate), where and as large as tools/gen_world.py
+    builds it; a mapped one declared too would hide itself from the detector."""
+    world = load_lab_world()
+    obstacles = {name: ((x, y, 0.0), (size_x, size_y, height), in_map)
+                 for name, x, y, size_x, size_y, height, in_map in world.OBSTACLES}
+    unmapped = {name for name, (_, _, in_map) in obstacles.items() if not in_map}
+    assert unmapped
+    for name in SHIPPED:
+        preexisting = [parsed for parsed in shipped(name).entities if parsed.preexisting]
+        assert {parsed.id for parsed in preexisting} == unmapped, name
+        for parsed in preexisting:
+            pose, size, _ = obstacles[parsed.id]
+            assert (parsed.pose(0.0), parsed.shape.type, parsed.shape.size) == \
+                (pose, 'box', size), (name, parsed.id)
 
 
 @pytest.mark.parametrize('name', SHIPPED)
