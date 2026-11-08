@@ -85,6 +85,7 @@ class Entity:
     first_seen: float = 0.0
     last_seen: float = 0.0
     member_ids: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)    # robots feeding it; central graph only
     attributes: dict[str, str] = field(default_factory=dict)
     hits: int = 0
 
