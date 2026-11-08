@@ -521,3 +521,151 @@ def no_entity_near(view, topic, x, y, tol, entity_id=None, from_sec=0.0, to_sec=
             return (f"{_entity_text(entity_id, x, y, tol)} at t={timestamp:.1f} on {topic}, "
                     f"distance {distance:.2f}")
     return None
+
+
+# ----------------------------------------------------------- perception
+# Mirror of SceneRelation.PREDICATE_* (pure: no rclpy import; SCENE_CATEGORIES
+# lives in the scene graph section above); unit/test_perception_assertions.py
+# checks both against the generated messages when the workspace is built.
+# Positions are compared as reported, i.e. in the message's frame_id ("map").
+SCENE_PREDICATES = {'INSIDE': 0, 'NEAR': 1, 'BLOCKS': 2, 'OCCUPIES': 3}
+_PREDICATE_NAMES = {value: name for name, value in SCENE_PREDICATES.items()}
+# Sensor stamps may lead the publisher's /clock by a few ms (separate topics);
+# a sensor stamp further ahead means the two stamps come from different clocks.
+LATENCY_CLOCK_SKEW_SEC = 0.05
+
+
+def _reports(stream, category):
+    """(t, entity) for every reported entity of the category, in order."""
+    wanted = SCENE_CATEGORIES[category]
+    return [(timestamp, entity) for timestamp, msg in stream
+            for entity in msg.entities if entity.category == wanted]
+
+
+def _xy(entity):
+    return f"({float(entity.position.x):.2f}, {float(entity.position.y):.2f})"
+
+
+def _seconds(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
+@register
+def observes(view, topic, source, category, x, y, tol, within_sec=None, **_):
+    """Some SceneObservation from source reports an entity of the category
+    within tol of (x, y), by sim time within_sec if given."""
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
+    if not stream:
+        return f"no messages on {where}"
+    reports = _reports(stream, category)
+    for timestamp, entity in reports:
+        if _distance_xy(entity.position, x, y) <= float(tol):
+            if within_sec is not None and timestamp > float(within_sec):
+                return (f"{category} within {tol} of ({x}, {y}) on {where} first reported "
+                        f"at t={timestamp:.1f}s > {within_sec}s")
+            return None
+    if not reports:
+        return f"no {category} entity ever reported on {where}"
+    timestamp, nearest = min(reports, key=lambda report: _distance_xy(report[1].position, x, y))
+    return (f"no {category} within {tol} of ({x}, {y}) on {where}; nearest {nearest.id} at "
+            f"{_xy(nearest)}, distance {_distance_xy(nearest.position, x, y):.2f}, "
+            f"t={timestamp:.1f}s")
+
+
+@register
+def observes_only(view, topic, source, category, points, tol, **_):
+    """Every entity of the category that source reports lies within tol of
+    one of the listed [x, y] points: a false-positive guard (walls reported
+    as obstacles, map misalignment). Fails closed without messages."""
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
+    if not stream:
+        return f"no messages on {where}"
+    strays = []
+    for timestamp, entity in _reports(stream, category):
+        distance = min((_distance_xy(entity.position, px, py) for px, py in points),
+                       default=math.inf)
+        if distance > float(tol):
+            strays.append((distance, timestamp, entity))
+    if not strays:
+        return None
+    distance, timestamp, entity = max(strays, key=lambda stray: stray[0])
+    ids = {stray_entity.id for _, _, stray_entity in strays}
+    return (f"{len(strays)} {category} report(s) ({len(ids)} ids) farther than {tol} from "
+            f"every point of {points} on {where}; farthest {entity.id} at {_xy(entity)}, "
+            f"{distance:.2f} away, t={timestamp:.1f}s")
+
+
+@register
+def relation_seen(view, topic, source, predicate, object_id, subject_category=None, **_):
+    """Some message from source holds `<subject> predicate object_id`; with
+    subject_category, the subject is an entity of that category (as source
+    reported it anywhere in the recording: a relation may name an entity
+    reported in an earlier delta)."""
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
+    if not stream:
+        return f"no messages on {where}"
+    wanted = SCENE_PREDICATES[predicate]
+    wanted_category = None if subject_category is None else SCENE_CATEGORIES[subject_category]
+    category_of = {entity.id: entity.category for _, msg in stream for entity in msg.entities}
+    seen = set()
+    for _, msg in stream:
+        for relation in msg.relations:
+            subject = category_of.get(relation.subject_id)
+            if (relation.predicate == wanted and relation.object_id == object_id
+                    and (wanted_category is None or subject == wanted_category)):
+                return None
+            seen.add(f"{relation.subject_id} ({_CATEGORY_NAMES.get(subject, '?')}) "
+                     f"{_PREDICATE_NAMES.get(relation.predicate, relation.predicate)} "
+                     f"{relation.object_id}")
+    subject_name = '' if subject_category is None else f'{subject_category} '
+    return (f"no {subject_name}subject {predicate} {object_id} on {where}; "
+            f"seen {sorted(seen)[:10]}")
+
+
+@register
+def removal_seen(view, topic, source, category, x, y, tol, **_):
+    """An entity of the category that source reported within tol of (x, y)
+    appears in a LATER message's removed_entity_ids."""
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
+    if not stream:
+        return f"no messages on {where}"
+    wanted = SCENE_CATEGORIES[category]
+    last_report = {}               # entity id -> sim t of its last report near (x, y)
+    for timestamp, msg in stream:
+        if any(entity_id in last_report for entity_id in msg.removed_entity_ids):
+            return None
+        for entity in msg.entities:
+            if entity.category == wanted and _distance_xy(entity.position, x, y) <= float(tol):
+                last_report[entity.id] = timestamp
+    if not last_report:
+        return f"no {category} within {tol} of ({x}, {y}) ever reported on {where}"
+    reports = ', '.join(f"{entity_id} (last t={timestamp:.1f}s)"
+                        for entity_id, timestamp in sorted(last_report.items()))
+    return (f"{category} reported within {tol} of ({x}, {y}) on {where} never appeared in "
+            f"removed_entity_ids: {reports}")
+
+
+@register
+def latency_below(view, topic, max_sec, source=None, **_):
+    """Perception latency below max_sec: per message, meta.stamp -
+    sensor_pose.header.stamp (sim s), the age of the newest sensor data an
+    observation is built from when it is published. Fails on the maximum."""
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
+    if not stream:
+        return f"no messages on {where}"
+    latencies = [(_seconds(msg.meta.stamp) - _seconds(msg.sensor_pose.header.stamp), timestamp)
+                 for timestamp, msg in stream]
+    earliest, earliest_t = min(latencies)
+    if earliest < -LATENCY_CLOCK_SKEW_SEC:
+        return (f"negative latency {earliest:.3f} s at t={earliest_t:.1f}s on {where}: "
+                f"sensor stamp after the publication stamp (different clocks?)")
+    worst, worst_t = max(latencies)
+    if worst < float(max_sec):
+        return None
+    return (f"latency {worst:.3f} s >= {max_sec} s at t={worst_t:.1f}s on {where} "
+            f"(over {len(latencies)} messages)")
