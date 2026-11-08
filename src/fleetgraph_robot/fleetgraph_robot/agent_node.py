@@ -56,6 +56,7 @@ class Agent(Node):
             ('max_leg_retries', 1),
             ('blocked_wait_sec', 5.0),        # wait before retrying a blocked leg
             ('max_blocked_sec', 60.0),        # then the task fails with ERROR_BLOCKED
+            ('blocked_progress_m', 0.5),      # a retry driving this far ends the blockage
             ('battery_initial', 1.0),
             ('battery_drain_per_m', 0.004),
             ('battery_drain_per_s', 0.0001),
@@ -74,6 +75,7 @@ class Agent(Node):
             max_leg_retries=self.params['max_leg_retries'],
             blocked_wait_sec=self.params['blocked_wait_sec'],
             max_blocked_sec=self.params['max_blocked_sec'],
+            blocked_progress_m=self.params['blocked_progress_m'],
             clock=lambda: self.get_clock().now().nanoseconds * 1e-9)
         self.meta = contract.MetaStamper(self.robot_id, self.get_clock())
 

@@ -18,7 +18,9 @@ nav_failure.py) uses no leg retry: the machine stays EXECUTING, waits
 blocked_wait_sec and retries (a replanning event) while the leg has been
 blocked for less than max_blocked_sec since its first blocked report (time
 from `clock`, the agent passes ROS time); after that the task FAILS with
-ERROR_BLOCKED and reassignment_requested.
+ERROR_BLOCKED and reassignment_requested. A retry that drives on (its
+distance_remaining falls blocked_progress_m below the longest it reported)
+ends the blockage: a later one starts its own clock.
 """
 import time
 from dataclasses import dataclass, field, replace
@@ -127,7 +129,7 @@ _DWELL, _BLOCKED = 'dwell', 'blocked'     # what a pending Wait is for
 class TaskMachine:
     def __init__(self, capabilities, resolve, min_battery=0.15, dwell_sec=2.0,
                  max_leg_retries=1, blocked_wait_sec=5.0, max_blocked_sec=60.0,
-                 clock=time.monotonic):
+                 blocked_progress_m=0.5, clock=time.monotonic):
         self.capabilities = set(capabilities)
         self.resolve = resolve      # location_id -> Goal or None
         self.min_battery = min_battery
@@ -135,15 +137,16 @@ class TaskMachine:
         self.max_leg_retries = max_leg_retries
         self.blocked_wait_sec = blocked_wait_sec
         self.max_blocked_sec = max_blocked_sec
+        self.blocked_progress_m = blocked_progress_m
         self.clock = clock          # () -> s
         self.replan_count = 0       # metric: retried legs over the lifetime
         self._task = None           # active TaskSpec
         self._legs = []
         self._leg_index = 0
         self._leg_retries = 0
-        self._blocked_since = None  # clock() at this leg's first blocked report
+        self._blocked_since = None  # clock() at the first report of the blockage
         self._waiting = None        # _DWELL / _BLOCKED while a Wait is pending
-        self._leg_length = None     # first/max distance_remaining of this leg
+        self._leg_length = None     # longest distance_remaining of this Navigate
         self._progress = 0.0
         self._distance_remaining = -1.0
         self._generation = 0        # current Navigate generation, 0 = none
@@ -205,6 +208,9 @@ class TaskMachine:
         distance = max(0.0, float(distance_remaining))
         if self._leg_length is None or distance > self._leg_length:
             self._leg_length = distance
+        if (self._blocked_since is not None
+                and self._leg_length - distance >= self.blocked_progress_m):
+            self._blocked_since = None      # the retry drives on: the blockage is over
         leg_fraction = 1.0 - distance / self._leg_length if self._leg_length > 0 else 0.0
         overall = (self._leg_index + leg_fraction) / len(self._legs)
         self._progress = max(self._progress, min(overall, 1.0))

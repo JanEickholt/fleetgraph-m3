@@ -290,6 +290,47 @@ def test_a_completed_leg_resets_the_blocked_time():
     assert update.reason.startswith('leg 1 to lab_2 blocked for 65.0 s')
 
 
+def test_progress_on_a_retry_resets_the_blocked_time():
+    # blocked, the retry drives on, then an unrelated blockage: it waits on
+    # its own clock instead of failing on the first blockage's
+    machine, clock = blocked_machine(blocked_wait_sec=5.0, max_blocked_sec=60.0,
+                                     blocked_progress_m=0.5)
+    navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    clock.now = 10.0
+    report_blocked(machine, navigation)
+    clock.now = 15.0
+    navigation = navigations(machine.blocked_wait_done())[0]
+    for distance in (0.0, 5.0, 4.6, 4.5):                   # 0.5 m driven on the retry
+        machine.nav_feedback(distance)
+    clock.now = 80.0                                        # 70 s after the first report
+    outputs = report_blocked(machine, navigation)
+    assert of_type(outputs, Wait) == [Wait(5.0, blocked=True)]
+    assert only_update(outputs).reason.startswith('waiting 5 s for blocked route (0.0 of 60 s')
+    clock.now = 85.0
+    navigation = navigations(machine.blocked_wait_done())[0]
+    clock.now = 140.0                                       # the second blockage: 60 s
+    update = only_update(report_blocked(machine, navigation))
+    assert (update.state, update.error_code) == (TaskState.FAILED, ErrorCode.BLOCKED)
+    assert update.reason.startswith('leg 0 to lab_1 blocked for 60.0 s')
+
+
+def test_less_than_blocked_progress_m_on_a_retry_keeps_the_blocked_time():
+    machine, clock = blocked_machine(blocked_wait_sec=5.0, max_blocked_sec=60.0,
+                                     blocked_progress_m=0.5)
+    navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]
+    clock.now = 10.0
+    report_blocked(machine, navigation)
+    clock.now = 15.0
+    navigation = navigations(machine.blocked_wait_done())[0]
+    # a replanned detour lengthens the path to 5.2 m: 0.4 m driven since
+    for distance in (0.0, 5.0, 4.7, 5.2, 4.8):
+        machine.nav_feedback(distance)
+    clock.now = 70.0
+    update = only_update(report_blocked(machine, navigation))
+    assert (update.state, update.error_code) == (TaskState.FAILED, ErrorCode.BLOCKED)
+    assert update.reason.startswith('leg 0 to lab_1 blocked for 60.0 s')
+
+
 def test_blocked_retries_leave_the_leg_retries_for_other_failures():
     machine, clock = blocked_machine(max_leg_retries=1)
     navigation = navigations(machine.assign(make_spec(), battery=0.9))[0]

@@ -69,7 +69,9 @@ script's, else robot_1). Camera sensors: `sim.launch.py camera:=true`. With a di
   it waits for a blocked route, and the leg is retried `blocked_wait_sec` (5.0) after each
   blocked report, counted as a replanning event. Once the leg has been blocked for
   `max_blocked_sec` (60.0, sim seconds since its first blocked report), the task is FAILED with
-  ERROR_BLOCKED (301) and `reassignment_requested`. Both are agent parameters.
+  ERROR_BLOCKED (301) and `reassignment_requested`.
+  A retry that drives `blocked_progress_m` (0.5) along its path ends the blockage: a later one
+  starts its own clock. All three are agent parameters.
 - Progress 0..1 is monotonic, computed from Nav2 `distance_remaining` per leg.
 - RobotState at 2 Hz (pose from AMCL TF, never ground truth), RobotConnection ONLINE/OFFLINE.
 - Maintenance: `ros2 param set /robot_1/fleetgraph_agent maintenance true`.
