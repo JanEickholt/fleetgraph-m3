@@ -178,7 +178,7 @@ class Agent(Node):
             retry_timer = None
 
             def retry():
-                retry_timer.cancel()
+                self.destroy_timer(retry_timer)     # one shot: no cancelled timers pile up
                 self._navigate(navigate, waited_sec + NAV_SERVER_POLL_SEC)
             retry_timer = self.create_timer(NAV_SERVER_POLL_SEC, retry)
             return
@@ -203,13 +203,19 @@ class Agent(Node):
 
     def _on_goal_response(self, generation, future):
         goal_handle = future.result()
+        if generation != self.machine.nav_generation:
+            # superseded (cancel, newer revision) before Nav2 answered: a
+            # stale goal must not drive the robot
+            if goal_handle.accepted:
+                goal_handle.cancel_goal_async()
+            return
         if not goal_handle.accepted:
             self._dispatch(self.machine.nav_result(
                 generation, False, 'goal rejected by Nav2'))
             return
         self._goal_handle = goal_handle
         goal_handle.get_result_async().add_done_callback(
-            lambda result_future: self._on_result(generation, result_future))
+            lambda result_future: self._on_result(generation, goal_handle, result_future))
 
     def _on_feedback(self, generation, feedback):
         if generation != self.machine.nav_generation:
@@ -221,7 +227,9 @@ class Agent(Node):
         self._last_feedback_time = now
         self._dispatch(self.machine.nav_feedback(feedback.feedback.distance_remaining))
 
-    def _on_result(self, generation, future):
+    def _on_result(self, generation, goal_handle, future):
+        if self._goal_handle is goal_handle:
+            self._goal_handle = None                # ended: nothing left to cancel
         response = future.result()
         if response.status == GoalStatus.STATUS_SUCCEEDED:
             self._dispatch(self.machine.nav_result(generation, True))
