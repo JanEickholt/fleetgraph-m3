@@ -92,16 +92,6 @@
 - **Where:** `src/fleetgraph_robot/fleetgraph_robot/social.py` (`SocialParams`, `social_zones`);
   `velocity_smoothing` in `scene_graph.py`.
 
-### Keepout mask — zones not grown by the robot radius
-
-- **Cost:** `rasterize` marks the cells whose centres lie inside a zone. Nav2 applies costmap
-  filters after the inflation layer, so keepout cells get no inflation: the planner lets the robot
-  centre reach the mask edge, and its 0.25 m body enters the zone.
-- **Why deferred:** the margin belongs where the mask is published for the KeepoutFilter, which is
-  week-7 work; `path_conflicts` already takes `robot_radius`.
-- **Trigger:** wiring the mask into Nav2's KeepoutFilter (week 7).
-- **Where:** `src/fleetgraph_robot/fleetgraph_robot/social.py` (`rasterize`, `path_conflicts`).
-
 ## Scene graph
 
 ### Fusion thresholds — chosen, not calibrated

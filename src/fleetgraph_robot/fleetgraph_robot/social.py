@@ -8,8 +8,9 @@ A person is a dynamic obstacle wrapped in a disc of personal space: its
 body plus min_distance. A group is one socially occupied region, the
 convex hull of its members' discs grown by group_margin, so no route leads
 between members. Discs become circumscribed polygons, which never undercut
-the configured distance. Conflicts and metrics test the very polygons the
-mask is drawn from, with one footprint rule.
+the configured distance. The mask, conflicts and metrics test these very
+polygons with one footprint rule: the robot's disc of robot_radius must not
+touch a zone.
 """
 import math
 from collections.abc import Callable, Iterable, Sequence
@@ -151,31 +152,30 @@ def _clips(polygon, start, end):
 
 
 def rasterize(zones: Iterable[Zone], origin_x: float, origin_y: float, resolution: float,
-              width: int, height: int, value: int = 100) -> list[int]:
+              width: int, height: int, value: int = 100,
+              robot_radius: float = 0.0) -> list[int]:
     """Row-major nav_msgs/OccupancyGrid data, row 0 at origin_y: `value`
-    where a cell centre lies in a zone, 0 elsewhere. Scanline fill over
-    each polygon's own rows only."""
+    where a cell centre lies within robot_radius of a zone (in it for 0), 0
+    elsewhere. Nav2 applies costmap filters after the inflation layer, so a
+    keepout mask gets no inflation: the margin keeps the robot's footprint,
+    not just its centre, out of every zone. Scanline fill over each zone's
+    own rows only."""
     if not resolution > 0:
         raise ValueError(f'resolution must be > 0, got {resolution!r}')
     if width < 0 or height < 0:
         raise ValueError(f'width and height must be >= 0, got {width} x {height}')
+    _check_radius(robot_radius)
     data = [0] * (width * height)
     for zone in zones:
         edges = list(_edges(zone.polygon))
         ys = [y for _, y in zone.polygon]
-        first_row = max(0, math.ceil((min(ys) - origin_y) / resolution - 0.5))
-        last_row = min(height - 1, math.floor((max(ys) - origin_y) / resolution - 0.5))
+        first_row = max(0, math.ceil((min(ys) - robot_radius - origin_y) / resolution - 0.5))
+        last_row = min(height - 1,
+                       math.floor((max(ys) + robot_radius - origin_y) / resolution - 0.5))
         for row in range(first_row, last_row + 1):
             y = origin_y + (row + 0.5) * resolution
-            low, high = math.inf, -math.inf
-            for (ax, ay), (bx, by) in edges:
-                if ay == by:
-                    if ay == y:
-                        low, high = min(low, ax, bx), max(high, ax, bx)
-                elif min(ay, by) <= y <= max(ay, by):
-                    x = ax + (y - ay) * (bx - ax) / (by - ay)
-                    low, high = min(low, x), max(high, x)
-            if low > high:          # rounding at the polygon's top or bottom vertex
+            low, high = _row_span(edges, y, robot_radius)
+            if low > high:          # rounding at the zone's top or bottom
                 continue
             first_col = max(0, math.ceil((low - origin_x) / resolution - 0.5))
             last_col = min(width - 1, math.floor((high - origin_x) / resolution - 0.5))
@@ -183,6 +183,56 @@ def rasterize(zones: Iterable[Zone], origin_x: float, origin_y: float, resolutio
                 start = row * width
                 data[start + first_col:start + last_col + 1] = [value] * (last_col - first_col + 1)
     return data
+
+
+def _row_span(edges, y, reach):
+    """(low, high) x of the points on the line at height y at most `reach`
+    from the convex polygon with these edges; low > high when there are none.
+    Those points are the polygon, a disc around each corner and a band along
+    each edge. Together they are convex, so the outermost ends are exact."""
+    low, high = math.inf, -math.inf
+    for (ax, ay), (bx, by) in edges:
+        if y < min(ay, by) - reach or y > max(ay, by) + reach:
+            continue
+        if ay == by:
+            if ay == y:
+                low, high = min(low, ax, bx), max(high, ax, bx)
+        elif min(ay, by) <= y <= max(ay, by):
+            x = ax + (y - ay) * (bx - ax) / (by - ay)
+            low, high = min(low, x), max(high, x)
+        if reach > 0:
+            if abs(y - ay) <= reach:
+                half = math.sqrt(reach * reach - (y - ay) ** 2)
+                low, high = min(low, ax - half), max(high, ax + half)
+            start, end = _band_span(ax, ay, bx, by, y, reach)
+            if start <= end:
+                low, high = min(low, start), max(high, end)
+    return low, high
+
+
+def _band_span(ax, ay, bx, by, y, reach):
+    """(start, end) x on the line at height y of the points at most `reach`
+    from the line through a and b whose projection falls between a and b;
+    start > end when there are none."""
+    dx, dy = bx - ax, by - ay
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return math.inf, -math.inf
+    v = y - ay
+    # with u = x - ax: distance from the line (u * dy - v * dx) / length in
+    # [-reach, reach], projection (u * dx + v * dy) / length in [0, length]
+    across = _linear_span(dy, -v * dx, -reach * length, reach * length)
+    along = _linear_span(dx, v * dy, 0.0, length * length)
+    return ax + max(across[0], along[0]), ax + min(across[1], along[1])
+
+
+def _linear_span(slope, offset, low, high):
+    """(first, last) u with low <= slope * u + offset <= high; first > last
+    when there is none."""
+    if slope == 0:
+        return (-math.inf, math.inf) if low <= offset <= high else (math.inf, -math.inf)
+    first, last = (low - offset) / slope, (high - offset) / slope
+    return min(first, last), max(first, last)
 
 
 def min_person_distance(x: float, y: float, entities: Iterable[Entity],

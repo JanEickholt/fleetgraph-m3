@@ -1,6 +1,7 @@
 """Social-navigation constraints (fleetgraph_robot.social). Pure — no rclpy,
-no sim. Covers person and group zones, path conflicts, the keepout raster,
-the minimum-distance metric and zone-entry counting.
+no sim. Covers person and group zones, path conflicts, the keepout raster
+and its robot-radius margin, the minimum-distance metric and zone-entry
+counting.
 """
 import math
 import statistics
@@ -196,7 +197,57 @@ def test_rasterize_is_row_major_from_the_origin_and_clips_to_the_grid():
         rasterize(zones, 0.0, 0.0, 0.0, 4, 3)
 
 
-def test_rasterize_10_zones_on_the_lab_map_is_fast():
+def cell_at(zones, x, y, robot_radius):
+    """The value of a one-cell grid centred on (x, y)."""
+    (value,) = rasterize(zones, x - 0.025, y - 0.025, 0.05, 1, 1, robot_radius=robot_radius)
+    return value
+
+
+@pytest.mark.parametrize('robot_radius', [0.0, 0.25])
+def test_rasterize_grows_a_person_disc_by_the_robot_radius(robot_radius):
+    (zone,) = social_zones([person('p', 2.0, 1.0)], PARAMS)         # r 0.75, flat edge facing +x
+    # towards the middle of an edge, and through a corner, where the margin is an arc
+    half_edge = math.pi / 16
+    for angle, reach in ((0.0, 0.75), (half_edge, 0.75 / math.cos(half_edge))):
+        dx, dy = math.cos(angle), math.sin(angle)
+        inside, outside = reach + robot_radius - 1e-6, reach + robot_radius + 1e-6
+        assert cell_at([zone], 2.0 + inside * dx, 1.0 + inside * dy, robot_radius) == 100, angle
+        assert cell_at([zone], 2.0 + outside * dx, 1.0 + outside * dy, robot_radius) == 0, angle
+
+
+@pytest.mark.parametrize('robot_radius', [0.0, 0.25])
+def test_rasterize_grows_a_group_hull_by_the_robot_radius(robot_radius):
+    members = [person('a', 2.0, 1.0), person('b', 2.0, -1.0)]       # person zones 0.5 m apart
+    zone = by_key(social_zones(members + [group('g', ['a', 'b'], 2.0, 0.0)], PARAMS))['group', 'g']
+    reach = GROUP_REACH + robot_radius
+    # sideways from the gap between the members, and beyond each member
+    for x, y, dx, dy in ((2.0, 0.0, 1, 0), (2.0, 0.0, -1, 0), (2.0, 1.0, 0, 1), (2.0, -1.0, 0, -1)):
+        inside, outside = reach - 1e-6, reach + 1e-6
+        assert cell_at([zone], x + inside * dx, y + inside * dy, robot_radius) == 100, (dx, dy)
+        assert cell_at([zone], x + outside * dx, y + outside * dy, robot_radius) == 0, (dx, dy)
+
+
+def test_rasterize_marks_exactly_the_cells_whose_centre_lies_within_the_robot_radius():
+    entities = [person('a', 0.6, 0.5, side=0.5), person('b', 1.9, 1.1), person('c', 3.5, 0.2),
+                group('g', ['b', 'c'], 2.7, 0.65)]
+    zones = social_zones(entities, PARAMS)
+    origin_x, origin_y, resolution, width, height = -0.513, -0.87, 0.05, 110, 70
+    robot_radius = 0.2537
+    data = rasterize(zones, origin_x, origin_y, resolution, width, height,
+                     robot_radius=robot_radius)
+    assert 0 < data.count(100) < len(data)
+    for row in range(height):
+        y = origin_y + (row + 0.5) * resolution
+        for col in range(width):
+            x = origin_x + (col + 0.5) * resolution
+            expected = 100 if any(zone.distance(x, y) <= robot_radius for zone in zones) else 0
+            assert data[row * width + col] == expected, (row, col)
+    with pytest.raises(ValueError, match='robot_radius'):
+        rasterize(zones, origin_x, origin_y, resolution, width, height, robot_radius=-0.1)
+
+
+@pytest.mark.parametrize('robot_radius', [0.0, 0.25])
+def test_rasterize_10_zones_on_the_lab_map_is_fast(robot_radius):
     spots = [(0.0, -2.0), (1.0, 2.0), (2.0, -1.0), (3.0, 1.0),
              (5.0, 2.0), (6.0, -1.5), (7.0, 1.0), (8.0, -2.0)]
     persons = [person(f'p{index}', x, y) for index, (x, y) in enumerate(spots)]
@@ -206,11 +257,12 @@ def test_rasterize_10_zones_on_the_lab_map_is_fast():
     samples = []
     for _ in range(15):
         start = time.perf_counter()
-        data = rasterize(zones, -1.5, -3.5, 0.05, 220, 140)               # the lab_floor map
+        data = rasterize(zones, -1.5, -3.5, 0.05, 220, 140,               # the lab_floor map
+                         robot_radius=robot_radius)
         samples.append(time.perf_counter() - start)
     median = statistics.median(samples)
-    print(f'\nrasterize(10 zones, 220 x 140 cells): median {median * 1e3:.2f} ms, '
-          f'max {max(samples) * 1e3:.2f} ms')
+    print(f'\nrasterize(10 zones, 220 x 140 cells, robot_radius {robot_radius}): '
+          f'median {median * 1e3:.2f} ms, max {max(samples) * 1e3:.2f} ms')
     assert data.count(100) > 0
     assert median < 0.050
 
