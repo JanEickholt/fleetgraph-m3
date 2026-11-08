@@ -1,11 +1,11 @@
 """Pure-Python mirrors of contract constants (task_machine TaskState,
-ErrorCode, TaskType; harness TASK_STATES) must equal the generated
-fleetgraph_interfaces messages.
+ErrorCode, TaskType; scene_graph Category, Predicate; harness TASK_STATES)
+must equal the generated fleetgraph_interfaces messages.
 Skips when the workspace is not built (no generated messages)."""
 import pytest
 
 import assertions
-from fleetgraph_robot import task_machine
+from fleetgraph_robot import scene_graph, task_machine
 
 messages = pytest.importorskip('fleetgraph_interfaces.msg')
 
@@ -28,3 +28,18 @@ def test_task_types_mirror():
     for name, value in vars(task_machine.TaskType).items():
         if name.isupper():
             assert getattr(messages.TaskRequest, f'TYPE_{name}') == value, name
+
+
+def msg_constants(message, prefix):
+    return {name.removeprefix(prefix): getattr(message, name)
+            for name in dir(message) if name.startswith(prefix)}
+
+
+def test_scene_categories_mirror():
+    assert msg_constants(messages.SceneEntity, 'CATEGORY_') == \
+        {category.name: category.value for category in scene_graph.Category}
+
+
+def test_scene_predicates_mirror():
+    assert msg_constants(messages.SceneRelation, 'PREDICATE_') == \
+        {predicate.name: predicate.value for predicate in scene_graph.Predicate}
