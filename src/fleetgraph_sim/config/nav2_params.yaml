@@ -12,6 +12,8 @@
 #    below our 0.19 m scan plane — kept low so a lower mount stays covered)
 #  - velocity limits match the gz DiffDrive (1.0 m/s^2, 2.0 rad/s^2)
 #  - map_saver free_thresh_default 0.196 as tools/gen_world.py writes maps
+#  - bt_navigator: behavior_trees/navigate_to_pose_fleetgraph.xml, the
+#    default tree without Spin / Wait / BackUp recoveries
 #  - KeepoutFilter on the global and the local costmap: social zones of
 #    people and groups from fleetgraph_robot's social_mask node, published
 #    on <robot_namespace>/keepout_mask (without that node the filter stays
@@ -77,10 +79,11 @@ bt_navigator:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
     navigate_through_poses:
       plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
-    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
-    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
+    # FleetGraph: no Spin / Wait / BackUp recoveries next to people (the
+    # agent waits out a blocked route); measurement in the file's header
+    default_nav_to_pose_bt_xml: $(find-pkg-share fleetgraph_sim)/behavior_trees/navigate_to_pose_fleetgraph.xml
+    # 'default_nav_through_poses_bt_xml' uses the default:
     # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
-    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
     # Built-in plugins are added automatically

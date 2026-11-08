@@ -122,6 +122,22 @@ $R ros2 run fleetgraph_robot perception --ros-args -r __ns:=/robot_1 -p robot_id
 - Other parameters: `regions_file`, `map_frame` (map), `base_frame` (base_footprint),
   `tf_timeout_sec` (0.5: a scan whose TF is later than that is dropped).
 
+## Social navigation
+
+`social_mask_node.py` (one per robot) turns the people and groups of the robot's own
+local scene graph into a mask for Nav2's KeepoutFilter, which both costmaps apply:
+
+```bash
+$R ros2 run fleetgraph_robot social_mask --ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 \
+     -p use_sim_time:=true
+```
+
+- Nav2 runs `behavior_trees/navigate_to_pose_fleetgraph.xml`: the default tree without
+  the Spin, Wait and BackUp recoveries. With them, a goal the social zones blocked spun,
+  waited, backed up 0.3 m and spun again for 19-20 s before failing with no valid path
+  (208), moving the robot up to 0.34 m next to the people; now it fails in 3-5 s and the
+  robot holds still while the agent waits out the blocked route.
+
 ## Central scene graph (mock Module 1)
 
 `mock_central` stands in for Module 1's global scene graph: it fuses the robots'

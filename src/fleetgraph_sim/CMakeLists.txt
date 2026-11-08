@@ -3,7 +3,7 @@ project(fleetgraph_sim)
 
 find_package(ament_cmake REQUIRED)
 
-install(DIRECTORY urdf worlds maps config launch
+install(DIRECTORY urdf worlds maps config launch behavior_trees
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
