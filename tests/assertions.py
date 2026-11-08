@@ -389,4 +389,41 @@ def graph_matches(view, topic, reference, tol=0.01, **_):
                                     other.position.y) > float(tol):
             return (f"{topic} at version {version}: {entity_id} differs: {_describe(entity)} "
                     f"vs reference {_describe(other)}")
+
+
+# ------------------------------------------------- Module 1 / Module 2 link
+@register
+def no_task_update(view, task_id=None, robot_id=None, source=None, state=None,
+                   topic='/fleet/task_update', **_):
+    """No TaskUpdate matches all given filters: task_id, msg.robot_id,
+    Meta.source_id, state. `robot_id: robot_3` = never assigned to robot_3 and
+    nothing reported by it. An empty recording fails: absence there proves
+    nothing."""
+    stream = view.stream(topic)
+    if not stream:
+        return f"no messages on {topic}"
+    matches = [(timestamp, msg) for timestamp, msg in _from_source(stream, source)
+               if (task_id is None or msg.task_id == task_id) and
+               (robot_id is None or msg.robot_id == robot_id) and
+               (state is None or msg.state == TASK_STATES[state])]
+    if not matches:
+        return None
+    shown = ', '.join(f"{msg.task_id} {_STATE_NAMES.get(msg.state, msg.state)} "
+                      f"t={timestamp:.1f}s" for timestamp, msg in matches[:5])
+    return f"{len(matches)} matching TaskUpdates on {topic}: {shown}"
+
+
+@register
+def always_value(view, topic, field, equals, tol=0.01, source=None, **_):
+    """Every message (from `source`) has numeric `field` == equals ± tol;
+    NaN fails."""
+    stream = _from_source(view.stream(topic), source)
+    where = _where(topic, source)
+    if not stream:
+        return f"no messages on {where}"
+    for timestamp, msg in stream:
+        value = _get_field(msg, field)
+        if not abs(float(value) - float(equals)) <= float(tol):
+            return (f"{where}: {field} = {value} at t={timestamp:.1f}s, "
+                    f"expected always {equals} ±{tol}")
     return None
