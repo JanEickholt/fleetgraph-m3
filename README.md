@@ -99,6 +99,45 @@ $R ros2 topic echo /robot_1/central/scene
 
 `./t -k weekly_central` runs the fusion, persistence and late-join resync scenarios (no sim).
 
+## Module 1 / Module 2 link (mock)
+
+Plain text: a script entry `text: "..."` instead of type/locations, or at runtime a
+`std_msgs/msg/String` on `/mock_m1/task_text` (ids `live-0001`, `live-0002`, ...).
+`task_text.py` reads one task per text; locations by registry id or label, loosely spelled:
+
+- go to: "Go to laboratory 1", "Navigate to Lab2", "Drive to the storage room",
+  "Return to the charging dock", "Move to charging dock 2"
+- delivery, pickup first: "Bring the parcel from the storage to lab 2",
+  "Take the box to lab 1 from the hall"
+- patrol: "Patrol the hall and the dock", "Patrol lab 1 and lab 2 twice", "... 3 times"
+- priority: "urgent" / "asap" / "immediately", "high priority", "low priority" (default normal)
+
+Anything else ("Go to the lab", "Bring the parcel to lab 2", "Make me a sandwich") is
+RECEIVED, then REJECTED with ERROR_PARSE (100) and the reason.
+
+Allocation (`allocation.py`): a script with `allocation: distance|context` makes
+`robot_id: auto` the default (any task may also say `robot_id: auto`). Auto tasks wait
+QUEUED in one queue and go to a robot once one is eligible, judged from the latest
+RobotState per robot and the straight-line distance to the first location. `distance`
+(baseline): nearest robot without an unfinished assignment. `context`: also skips
+MAINTENANCE / ERROR, heartbeat older than 3 s, a missing capability (delivery needs
+`deliver`, patrol `patrol`) and battery below 0.20, and prefers robots reporting idle.
+The mock logs every choice with distances and each excluded robot's reason.
+
+Module 2: `ros2 launch fleetgraph_robot m2_bridge.launch.py` serves rosbridge (JSON
+protocol) at `ws://<host>:9090`, plus rosapi. Clients may subscribe `/fleet/*`
+(`/fleet/robot_state`, `/fleet/task_update`, `/fleet/robot_connection`, ...) and publish
+text tasks to `/mock_m1/task_text`; publishing `/fleet/*` and parameters are closed. Run
+the mock with `-p scenario_file:=/home/ubuntu/mock_data/scenarios/m1_live.yaml` for live
+text only. `tools/ws_probe.py` is a minimal client (scenarios `weekly_m2_bridge`,
+`demo_midterm`):
+
+```json
+{"op": "subscribe", "topic": "/fleet/robot_state", "type": "fleetgraph_interfaces/msg/RobotState"}
+{"op": "advertise", "topic": "/mock_m1/task_text", "type": "std_msgs/msg/String"}
+{"op": "publish", "topic": "/mock_m1/task_text", "msg": {"data": "Bring the parcel from the storage to lab 2"}}
+```
+
 ## Simulation notes
 
 - World "lab_floor" (10 × 6 m): hall with docks/storage, two labs behind 1 m doors, and an
