@@ -11,7 +11,8 @@ import pytest
 
 from fleetgraph_robot.scene_graph import Category, Entity
 from fleetgraph_robot.social import (
-    SocialParams, min_person_distance, path_conflicts, rasterize, social_zones, violations)
+    SocialParams, Zone, min_person_distance, path_conflicts, rasterize, social_zones,
+    violations)
 
 PARAMS = SocialParams(min_distance=0.5, person_radius=0.25, group_margin=0.2, disc_segments=16)
 GROUP_REACH = 0.25 + 0.5 + 0.2             # unknown body + min_distance + group_margin
@@ -122,6 +123,19 @@ def test_zone_polygons_are_convex_and_counter_clockwise():
         polygon = zone.polygon
         for a, b, c in zip(polygon, polygon[1:] + polygon[:1], polygon[2:] + polygon[:2]):
             assert (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) > 0, zone.entity_id
+
+
+@pytest.mark.parametrize('polygon', [(), ((1.0, 1.0),), ((0.0, 0.0), (2.0, 0.0))])
+def test_a_polygon_of_fewer_than_3_corners_contains_nothing(polygon):
+    zone = Zone('person', 'p', polygon)
+    for x, y in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (5.0, -3.0)]:
+        assert not zone.contains(x, y)
+
+
+def test_distance_to_a_degenerate_polygon():
+    assert Zone('person', 'p', ((0.0, 0.0), (2.0, 0.0))).distance(1.0, 0.5) == pytest.approx(0.5)
+    assert Zone('person', 'p', ((1.0, 1.0),)).distance(1.0, 1.0) == 0.0
+    assert Zone('person', 'p', ()).distance(1.0, 1.0) == math.inf
 
 
 # -------------------------------------------------------- path conflicts

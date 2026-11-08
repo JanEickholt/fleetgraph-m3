@@ -49,16 +49,21 @@ class Zone:
     polygon: tuple[Point, ...]      # convex, counter-clockwise, map frame
 
     def contains(self, x: float, y: float) -> bool:
-        """The boundary counts as inside."""
+        """The boundary counts as inside. Fewer than 3 corners enclose
+        nothing (every point passes the edge test of an empty polygon)."""
+        if len(self.polygon) < 3:
+            return False
         for (ax, ay), (bx, by) in _edges(self.polygon):
             if (bx - ax) * (y - ay) - (by - ay) * (x - ax) < 0:
                 return False
         return True
 
     def distance(self, x: float, y: float) -> float:
+        """0 inside, inf for an empty polygon."""
         if self.contains(x, y):
             return 0.0
-        return min(_point_segment_distance(x, y, a, b) for a, b in _edges(self.polygon))
+        return min((_point_segment_distance(x, y, a, b) for a, b in _edges(self.polygon)),
+                   default=math.inf)
 
 
 def social_zones(entities: Iterable[Entity], params: SocialParams | None = None) -> list[Zone]:
