@@ -30,8 +30,7 @@ from collections import deque
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from diagnostic_msgs.msg import KeyValue
-from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped, Vector3
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
@@ -41,8 +40,8 @@ from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from fleetgraph_interfaces.msg import SceneEntity, SceneObservation, SceneRelation
-from fleetgraph_robot import contract
+from fleetgraph_interfaces.msg import SceneObservation
+from fleetgraph_robot import contract, scene_msgs
 from fleetgraph_robot.lidar_obstacles import obstacle_detections
 from fleetgraph_robot.perception import (
     SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
@@ -60,11 +59,6 @@ MAP_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
-def time_msg(seconds):
-    """Sim seconds -> builtin_interfaces/Time."""
-    return Time(nanoseconds=round(seconds * 1e9)).to_msg()
-
-
 def pose_stamped(transform):
     """TransformStamped -> PoseStamped of its child frame in its frame."""
     translation = transform.transform.translation
@@ -72,33 +66,6 @@ def pose_stamped(transform):
     pose.pose.position = Point(x=translation.x, y=translation.y, z=translation.z)
     pose.pose.orientation = transform.transform.rotation
     return pose
-
-
-def observation_msg(delta, robot_id, frame_id, sensor_pose, confidence):
-    """scene_graph.Delta -> SceneObservation (meta filled by MetaStamper)."""
-    return SceneObservation(
-        robot_id=robot_id, frame_id=frame_id, sensor_pose=sensor_pose,
-        entities=[_entity_msg(entity) for entity in delta.entities],
-        relations=[SceneRelation(subject_id=relation.subject_id,
-                                 predicate=int(relation.predicate),
-                                 object_id=relation.object_id,
-                                 confidence=float(relation.confidence))
-                   for relation in delta.relations],
-        removed_entity_ids=list(delta.removed_ids), confidence=float(confidence))
-
-
-def _entity_msg(entity):
-    size_x, size_y, size_z = entity.size
-    return SceneEntity(
-        id=entity.id, category=int(entity.category), label=entity.label,
-        position=Point(x=float(entity.x), y=float(entity.y), z=float(entity.z)),
-        size=Vector3(x=float(size_x), y=float(size_y), z=float(size_z)),
-        velocity=Vector3(x=float(entity.vx), y=float(entity.vy), z=0.0),
-        confidence=float(entity.confidence),
-        first_seen=time_msg(entity.first_seen), last_seen=time_msg(entity.last_seen),
-        member_ids=list(entity.member_ids),
-        attributes=[KeyValue(key=key, value=value)
-                    for key, value in sorted(entity.attributes.items())])
 
 
 def _pose2d(transform):
@@ -292,8 +259,8 @@ class Perception(Node):
                          >= Duration(seconds=self.params['heartbeat_sec']))
         if not (changed or heartbeat_due):
             return
-        msg = observation_msg(delta, self.robot_id, self.params['map_frame'],
-                              self._sensor_pose, self._localization_score)
+        msg = scene_msgs.observation_to_msg(delta, self.robot_id, self.params['map_frame'],
+                                            self._sensor_pose, self._localization_score)
         self.pub_observation.publish(self.meta.stamp(msg, contract.TOPIC_SCENE_OBSERVATION))
         self._published_relations = relations
         self._last_publish = now

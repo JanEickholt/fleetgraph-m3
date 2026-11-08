@@ -1,11 +1,12 @@
-"""Conversions between the pure scene-graph types (scene_graph.Entity and
-Relation, central_graph.Observation and GraphUpdate) and the contract
-messages (tests/unit/test_scene_msgs.py). Times are seconds on the ROS
-clock (sim time in simulation); Meta is left to the publisher's
+"""Conversions between the pure scene-graph types (scene_graph.Entity,
+Relation and Delta, central_graph.Observation and GraphUpdate) and the
+contract messages (tests/unit/test_scene_msgs.py). Times are seconds on the
+ROS clock (sim time in simulation); Meta is left to the publisher's
 MetaStamper.
 
   SceneEntity       <-> Entity        (hits is tracker bookkeeping: not sent)
   SceneRelation     <-> Relation
+  SceneObservation  <-  Delta         (a local graph's, perception_node)
   SceneObservation   -> Observation   (map frame only)
   SceneGraphUpdate  <-> GraphUpdate
 """
@@ -13,9 +14,10 @@ from builtin_interfaces.msg import Time
 from diagnostic_msgs.msg import KeyValue
 from geometry_msgs.msg import Point, Vector3
 
-from fleetgraph_interfaces.msg import SceneEntity, SceneGraphUpdate, SceneRelation
+from fleetgraph_interfaces.msg import (
+    SceneEntity, SceneGraphUpdate, SceneObservation, SceneRelation)
 from fleetgraph_robot.central_graph import GraphUpdate, Observation
-from fleetgraph_robot.scene_graph import Entity, Relation
+from fleetgraph_robot.scene_graph import Delta, Entity, Relation
 
 MAP_FRAME = 'map'
 
@@ -64,6 +66,17 @@ def relation_to_msg(relation: Relation) -> SceneRelation:
 
 def relation_from_msg(msg: SceneRelation) -> Relation:
     return Relation(msg.subject_id, msg.predicate, msg.object_id, msg.confidence)
+
+
+def observation_to_msg(delta: Delta, robot_id: str, frame_id: str, sensor_pose,
+                       confidence: float) -> SceneObservation:
+    """A local graph's delta as one SceneObservation; sensor_pose is a
+    geometry_msgs/PoseStamped, confidence the localization score."""
+    return SceneObservation(
+        robot_id=robot_id, frame_id=frame_id, sensor_pose=sensor_pose,
+        entities=[entity_to_msg(entity) for entity in delta.entities],
+        relations=[relation_to_msg(relation) for relation in delta.relations],
+        removed_entity_ids=list(delta.removed_ids), confidence=float(confidence))
 
 
 def observation_from_msg(msg, received: float) -> Observation:

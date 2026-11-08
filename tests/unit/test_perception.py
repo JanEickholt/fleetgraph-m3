@@ -1,6 +1,7 @@
 """Perception glue (fleetgraph_robot.perception, the generated regions and the
-SceneObservation conversion of perception_node). Pure except the message
-tests, which skip when the workspace is not built.
+sensor pose of perception_node; its SceneObservation conversion is
+scene_msgs, tests/unit/test_scene_msgs.py). Pure except the sensor pose test,
+which skips when the workspace is not built.
 """
 import importlib.util
 import math
@@ -17,7 +18,7 @@ from fleetgraph_robot.perception import (
     SEMANTIC_SOURCE, MapMatcher, any_view, compose, detector_coverage, lidar_coverage,
     localization_score, map_correction, occupancy_from_grid, semantic_detections, to_map)
 from fleetgraph_robot.regions import load_regions
-from fleetgraph_robot.scene_graph import Category, Delta, Entity, Predicate, Relation
+from fleetgraph_robot.scene_graph import Category
 
 import test_lidar_obstacles as lidar_tests                 # lab world, raycast
 
@@ -326,27 +327,13 @@ def test_localization_score_matches_the_agent_heuristic():
     assert localization_score(covariance) == pytest.approx(1.0 / (1.0 + math.sqrt(0.03125) / 0.25))
 
 
-# ----------------------------------------------------- message conversion
+# ------------------------------------------------------------ sensor pose
 
-def test_time_msg_rounds_sim_seconds_to_nanoseconds():
-    pytest.importorskip('fleetgraph_interfaces.msg')
-    from fleetgraph_robot.perception_node import time_msg
-    assert (time_msg(12.3456789).sec, time_msg(12.3456789).nanosec) == (12, 345678900)
-    assert (time_msg(1.9999999999).sec, time_msg(1.9999999999).nanosec) == (2, 0)
-
-
-def test_observation_msg_carries_the_delta():
+def test_pose_stamped_is_the_child_frame_pose_of_a_transform():
     pytest.importorskip('fleetgraph_interfaces.msg')
     from geometry_msgs.msg import TransformStamped
-    from fleetgraph_robot.perception_node import observation_msg, pose_stamped
+    from fleetgraph_robot.perception_node import pose_stamped
 
-    crate = Entity('robot_1/obstacle/4', Category.OBSTACLE, 'unknown', 2.5, 0.8, z=0.1,
-                   size=(0.5, 0.5, 0.0), vx=0.01, vy=-0.02, confidence=0.875,
-                   first_seen=20.25, last_seen=31.5, attributes={'source': 'lidar'})
-    group = Entity('robot_1/group/9', Category.GROUP, 'group', 1.0, 1.0,
-                   member_ids=['robot_1/person/7', 'robot_1/person/8'])
-    delta = Delta([crate, group], ['robot_1/person/3'],
-                  [Relation(crate.id, Predicate.INSIDE, 'hall', 0.875)])
     transform = TransformStamped()
     transform.header.frame_id = 'map'
     transform.header.stamp.sec, transform.header.stamp.nanosec = 31, 500000000
@@ -354,24 +341,5 @@ def test_observation_msg_carries_the_delta():
     transform.transform.rotation.z, transform.transform.rotation.w = 0.6, 0.8
     sensor_pose = pose_stamped(transform)
     assert (sensor_pose.header.frame_id, sensor_pose.header.stamp.sec) == ('map', 31)
-    assert (sensor_pose.pose.position.x, sensor_pose.pose.orientation.z) == (1.0, 0.6)
-
-    msg = observation_msg(delta, 'robot_1', 'map', sensor_pose, confidence=0.9)
-    assert (msg.robot_id, msg.frame_id, msg.sensor_pose) == ('robot_1', 'map', sensor_pose)
-    assert msg.confidence == pytest.approx(0.9)
-    assert list(msg.removed_entity_ids) == ['robot_1/person/3']
-    first, second = msg.entities
-    assert (first.id, first.category, first.label) == (crate.id, Category.OBSTACLE, 'unknown')
-    assert (first.position.x, first.position.y, first.position.z) == (2.5, 0.8, 0.1)
-    assert (first.size.x, first.size.y, first.size.z) == (0.5, 0.5, 0.0)
-    assert (first.velocity.x, first.velocity.y, first.velocity.z) == (0.01, -0.02, 0.0)
-    assert first.confidence == pytest.approx(0.875)
-    assert (first.first_seen.sec, first.first_seen.nanosec) == (20, 250000000)
-    assert (first.last_seen.sec, first.last_seen.nanosec) == (31, 500000000)
-    assert [(pair.key, pair.value) for pair in first.attributes] == [('source', 'lidar')]
-    assert list(first.source_ids) == [] and list(first.member_ids) == []
-    assert list(second.member_ids) == group.member_ids
-    (relation,) = msg.relations
-    assert (relation.subject_id, relation.predicate, relation.object_id) == \
-        (crate.id, Predicate.INSIDE, 'hall')
-    assert relation.confidence == pytest.approx(0.875)
+    assert (sensor_pose.pose.position.x, sensor_pose.pose.position.y) == (1.0, 0.5)
+    assert (sensor_pose.pose.orientation.z, sensor_pose.pose.orientation.w) == (0.6, 0.8)

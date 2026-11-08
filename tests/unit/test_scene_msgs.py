@@ -1,7 +1,7 @@
 """Conversions between the pure scene-graph types and the contract messages
-(fleetgraph_robot.scene_msgs): stamps, entities, relations, observations
-(map frame only, unset stamps) and versioned graph updates.
-Skips when the workspace is not built (no generated messages)."""
+(fleetgraph_robot.scene_msgs): stamps, entities, relations, local deltas as
+observations, observations (map frame only, unset stamps) and versioned
+graph updates. Skips when the workspace is not built (no generated messages)."""
 from dataclasses import replace
 
 import pytest
@@ -9,11 +9,13 @@ import pytest
 messages = pytest.importorskip('fleetgraph_interfaces.msg')
 
 from builtin_interfaces.msg import Time  # noqa: E402
+from geometry_msgs.msg import PoseStamped  # noqa: E402
 
 from fleetgraph_robot import scene_msgs  # noqa: E402
 from fleetgraph_robot.central_graph import (  # noqa: E402
     CentralSceneGraph, GraphReplica, GraphUpdate)
-from fleetgraph_robot.scene_graph import Category, Entity, Predicate, Relation  # noqa: E402
+from fleetgraph_robot.scene_graph import (  # noqa: E402
+    Category, Delta, Entity, Predicate, Relation)
 
 # confidences and stamps exactly representable in float32 / nanoseconds
 CRATE = Entity('g/obstacle/1', Category.OBSTACLE, 'crate', 2.5, 0.8, z=0.25,
@@ -27,6 +29,7 @@ NEAR = Relation('g/person/2', Predicate.NEAR, 'g/obstacle/1', 0.5)
 
 def test_time_converts_both_ways_at_nanosecond_resolution():
     assert scene_msgs.sec_to_time(12.25) == Time(sec=12, nanosec=250_000_000)
+    assert scene_msgs.sec_to_time(12.3456789) == Time(sec=12, nanosec=345_678_900)
     assert scene_msgs.sec_to_time(1.9999999999) == Time(sec=2, nanosec=0)
     assert scene_msgs.time_to_sec(Time(sec=3, nanosec=500_000_000)) == 3.5
     assert scene_msgs.is_unset(Time()) and not scene_msgs.is_unset(Time(nanosec=1))
@@ -61,6 +64,36 @@ def test_relations_map_onto_scene_relation_and_back():
     assert (msg.subject_id, msg.predicate, msg.object_id, msg.confidence) == \
         ('g/person/2', messages.SceneRelation.PREDICATE_NEAR, 'g/obstacle/1', 0.5)
     assert scene_msgs.relation_from_msg(msg) == NEAR
+
+
+def test_a_local_delta_becomes_a_scene_observation_and_reads_back():
+    """perception_node publishes LocalSceneGraph deltas this way; the central
+    graph (mock_central) reads them back with observation_from_msg."""
+    crate = Entity('robot_1/obstacle/4', Category.OBSTACLE, 'unknown', 2.5, 0.8, z=0.125,
+                   size=(0.5, 0.5, 0.0), vx=0.25, vy=-0.5, confidence=0.875,
+                   first_seen=20.25, last_seen=31.5, attributes={'source': 'lidar'}, hits=12)
+    delta = Delta([crate, MEETING], ['robot_1/person/3'],
+                  [Relation(crate.id, Predicate.INSIDE, 'hall', 0.875)])
+    sensor_pose = PoseStamped()
+    sensor_pose.header.frame_id = 'map'
+    sensor_pose.header.stamp = Time(sec=31, nanosec=500_000_000)
+    sensor_pose.pose.position.x, sensor_pose.pose.orientation.w = 1.0, 1.0
+    msg = scene_msgs.observation_to_msg(delta, 'robot_1', 'map', sensor_pose, confidence=0.9)
+    assert isinstance(msg, messages.SceneObservation)
+    assert (msg.robot_id, msg.frame_id, msg.sensor_pose) == ('robot_1', 'map', sensor_pose)
+    assert msg.confidence == pytest.approx(0.9)
+    assert list(msg.removed_entity_ids) == ['robot_1/person/3']
+    assert [entity.id for entity in msg.entities] == [crate.id, MEETING.id]
+    assert list(msg.entities[0].source_ids) == [] and list(msg.entities[0].member_ids) == []
+    (relation,) = msg.relations
+    assert (relation.subject_id, relation.predicate, relation.object_id) == \
+        (crate.id, messages.SceneRelation.PREDICATE_INSIDE, 'hall')
+    msg.meta.stamp = Time(sec=32)                           # MetaStamper's part
+    observation = scene_msgs.observation_from_msg(msg, received=33.0)
+    assert (observation.robot_id, observation.stamp) == ('robot_1', 32.0)
+    assert observation.entities == [replace(crate, hits=0),        # unset stamps: receipt
+                                    replace(MEETING, first_seen=33.0, last_seen=33.0)]
+    assert (observation.relations, observation.removed_ids) == (delta.relations, delta.removed_ids)
 
 
 def observation_msg(entities, frame_id='map', stamp=Time(sec=20)):
