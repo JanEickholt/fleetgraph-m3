@@ -144,16 +144,19 @@ class ManagedProcess:
 
 
 class View:
-    """What assertions see of a recording: stream(topic) and duration()."""
+    """What assertions see of a recording: stream(topic) and duration(), the
+    window length when the recording ended (wall-time windows would keep
+    growing while the assertions run)."""
 
     def __init__(self, recorder):
         self.recorder = recorder
+        self._duration = recorder.elapsed()
 
     def stream(self, topic):
         return self.recorder.streams.get(topic, [])
 
     def duration(self):
-        return self.recorder.elapsed()
+        return self._duration
 
 
 def _task_history(task_updates):
@@ -175,6 +178,9 @@ def _evidence(recorder, processes, wall_sec):
     for topic, stream in recorder.streams.items():
         evidence[topic] = {'count': len(stream),
                            'per_sec': round(len(stream) / max(elapsed, 1e-9), 1)}
+        if len(stream) > 1:     # merged over all sources; min_rate can check one
+            evidence[topic]['max_gap_sec'] = round(
+                max(later[0] - earlier[0] for earlier, later in zip(stream, stream[1:])), 2)
         if topic.endswith('/odom') and stream:
             position = stream[-1][1].pose.pose.position
             evidence[f'last{topic.replace("/", "_")}'] = [round(position.x, 2),

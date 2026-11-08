@@ -32,3 +32,12 @@ def test_last_position_per_odometry_topic():
     evidence = _evidence(recording(10.0, 10.0, streams), [], wall_sec=10.0)
     assert evidence['last_ground_truth_robot_2_odom'] == [6.5, -1.5]
     assert 'last_robot_1_odom' not in evidence
+
+
+def test_longest_gap_per_topic():
+    # the pause min_rate fails on, as a number in every run's evidence
+    streams = {'/fleet/robot_state': [(1.0, None), (1.5, None), (4.0, None), (4.5, None)],
+               '/sim/truth': [(2.0, None)]}
+    evidence = _evidence(recording(10.0, 10.0, streams), [], wall_sec=10.0)
+    assert evidence['/fleet/robot_state'] == {'count': 4, 'per_sec': 0.4, 'max_gap_sec': 2.5}
+    assert evidence['/sim/truth'] == {'count': 1, 'per_sec': 0.1}

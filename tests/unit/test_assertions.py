@@ -44,9 +44,14 @@ def test_publishes_pass_and_fail():
     assert failure and 'no message' in failure
 
 
+def ticks(hz, start, stop):
+    """Message times of a publisher at hz from start until before stop."""
+    return [(start + index / hz, 'm') for index in range(round((stop - start) * hz))]
+
+
 def test_min_rate_pass_and_fail():
-    # 20 messages, 0.5s apart -> true rate 2.0 Hz (inter-arrival estimate)
-    recording = FakeRecording({'/odom': [(index * 0.5, index) for index in range(20)]}, 10.0)
+    # 20 messages, 0.5 s apart, over a 10 s window -> 2.0 Hz
+    recording = FakeRecording({'/odom': ticks(2.0, 0.0, 10.0)}, 10.0)
     assert assertions.min_rate(recording, topic='/odom', hz=1.5) is None
     failure = assertions.min_rate(recording, topic='/odom', hz=3.0)
     assert failure and '2.00 Hz' in failure and 'nominal 3.0' in failure
@@ -58,7 +63,64 @@ def test_min_rate_pass_and_fail():
     assert failure and 'no messages' in failure
     single = FakeRecording({'/odom': [(1.0, 'm')]}, 10.0)
     failure = assertions.min_rate(single, topic='/odom', hz=1.0)
-    assert failure and 'cannot estimate rate' in failure
+    assert failure and '0.10 Hz (1 messages in [0, 10] s)' in failure
+
+
+def test_min_rate_counts_over_the_window_so_a_publisher_that_dies_early_fails():
+    # 2 Hz for 10 s, then silence, in a 180 s window: the first-to-last
+    # estimate said 2.0 Hz and passed
+    died = FakeRecording({'/fleet/robot_state': ticks(2.0, 0.0, 10.0)}, 180.0)
+    failure = assertions.min_rate(died, topic='/fleet/robot_state', hz=2.0)
+    assert failure and '0.11 Hz (20 messages in [0, 180] s)' in failure
+
+
+def test_min_rate_counts_over_the_window_so_a_publisher_that_starts_late_fails():
+    late = FakeRecording({'/fleet/robot_state': ticks(2.0, 170.0, 180.0)}, 180.0)
+    failure = assertions.min_rate(late, topic='/fleet/robot_state', hz=2.0)
+    assert failure and '0.11 Hz' in failure
+
+
+def test_min_rate_allows_the_start_up_of_processes_started_in_the_window():
+    # actions start at t >= 0 and take seconds to come up: without from_sec
+    # the leading pause is not a gap, the count bounds it
+    starting = FakeRecording({'/fleet/robot_state': ticks(2.0, 4.0, 60.0)}, 60.0)
+    assert assertions.min_rate(starting, topic='/fleet/robot_state', hz=2.0) is None
+
+
+def test_min_rate_fails_on_a_pause_the_average_hides():
+    # 175 s at 2 Hz around a 5 s pause: 1.94 Hz on average
+    paused = FakeRecording({'/fleet/robot_state': ticks(2.0, 0.0, 90.0) +
+                            ticks(2.0, 95.0, 180.0)}, 180.0)
+    failure = assertions.min_rate(paused, topic='/fleet/robot_state', hz=2.0)
+    assert failure and 'gap of 5.50 s from t=89.5s' in failure and '3 periods (1.50 s' in failure
+    # stopped 5 s before the window ended
+    stopped = FakeRecording({'/fleet/robot_state': ticks(2.0, 0.0, 175.0)}, 180.0)
+    failure = assertions.min_rate(stopped, topic='/fleet/robot_state', hz=2.0)
+    assert failure and 'gap of 5.50 s from t=174.5s' in failure
+    # a pause of up to 3 periods is jitter (one lost message is 2)
+    jitter = FakeRecording({'/fleet/robot_state': ticks(2.0, 0.0, 90.0) +
+                            ticks(2.0, 91.0, 180.0)}, 180.0)
+    assert assertions.min_rate(jitter, topic='/fleet/robot_state', hz=2.0) is None
+
+
+def test_min_rate_window_counts_only_inside_and_checks_its_start():
+    # 5 Hz from 10 to 20 s, nothing else: fine there, not over the recording
+    burst = FakeRecording({'/detections': ticks(5.0, 10.0, 20.0)}, 60.0)
+    assert assertions.min_rate(burst, topic='/detections', hz=5.0,
+                               from_sec=10, to_sec=19.9) is None
+    failure = assertions.min_rate(burst, topic='/detections', hz=5.0)
+    assert failure and 'in [0, 60] s' in failure
+    # with from_sec the stream must run from then on: 1.5 s late is a gap
+    # although 85% of the count arrived
+    late = FakeRecording({'/detections': ticks(5.0, 11.5, 20.0)}, 60.0)
+    failure = assertions.min_rate(late, topic='/detections', hz=5.0, from_sec=10, to_sec=19.9)
+    assert failure and 'gap of 1.50 s from t=10.0s' in failure
+    # a window past the recording ends with it
+    tail = FakeRecording({'/detections': ticks(5.0, 0.0, 60.0)}, 60.0)
+    assert assertions.min_rate(tail, topic='/detections', hz=5.0, from_sec=50,
+                               to_sec=1e9) is None
+    failure = assertions.min_rate(tail, topic='/detections', hz=5.0, from_sec=70)
+    assert failure and 'empty window' in failure
 
 
 def test_arrives_at_pass_and_fail():

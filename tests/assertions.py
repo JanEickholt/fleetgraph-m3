@@ -21,6 +21,11 @@ import math
 # harness derives the hard threshold. Override per-assertion only with
 # a written reason.
 DEFAULT_RATE_MARGIN = 0.2
+# A stream that pauses longer than this many nominal periods fails min_rate
+# even when its average passes: a publisher that stalled, or died and came
+# back. Not 1-2 periods: the recorder stamps messages on arrival, and a
+# busy harness loop or one lost best-effort message stretches a gap.
+MAX_GAP_PERIODS = 3.0
 
 REGISTRY = {}
 
@@ -68,23 +73,38 @@ def _where(topic, source):
 
 
 @register
-def min_rate(view, topic, hz, margin=None, source=None):
-    stream = _from_source(view.stream(topic), source)
+def min_rate(view, topic, hz, margin=None, source=None, from_sec=None, to_sec=None):
+    """Messages (from source) in the window [from_sec, to_sec] (default: the
+    whole recording) number at least hz, less the margin, per window second:
+    counted over the window, so a publisher that starts late or dies early
+    loses the messages it did not send. The stream also fails on a pause of
+    more than MAX_GAP_PERIODS periods between two messages or after the last
+    one, and before the first one when from_sec is given; without from_sec
+    the window opens before the processes start, and the count bounds how
+    late a publisher may begin."""
     where = _where(topic, source)
-    if not stream:
-        return f"no messages on {where}"
-    if len(stream) < 2:
-        return (f"only 1 message on {where}, "
-                f"cannot estimate rate")
-    span = stream[-1][0] - stream[0][0]
-    if span <= 0:
-        return f"messages on {where} span {span}s, cannot estimate rate"
-    actual = (len(stream) - 1) / span
+    start = 0.0 if from_sec is None else max(0.0, float(from_sec))
+    end = view.duration() if to_sec is None else min(float(to_sec), view.duration())
+    window = f"[{start:g}, {end:g}] s"
+    if end <= start:
+        return f"empty window {window} on {where} (recording {view.duration():.1f} s)"
+    times = [timestamp for timestamp, _ in _from_source(view.stream(topic), source)
+             if start <= timestamp <= end]
+    if not times:
+        return f"no messages on {where} in {window}"
+    actual = len(times) / (end - start)
     margin_fraction = DEFAULT_RATE_MARGIN if margin is None else float(margin)
     required = float(hz) * (1.0 - margin_fraction)
     if actual < required:
-        return (f"rate {actual:.2f} Hz < required {required:.2f} Hz "
-                f"(nominal {hz} - {margin_fraction:.0%} margin) on {where}")
+        return (f"rate {actual:.2f} Hz ({len(times)} messages in {window}) < required "
+                f"{required:.2f} Hz (nominal {hz} - {margin_fraction:.0%} margin) on {where}")
+    edges = ([start] if from_sec is not None else []) + times + [end]
+    gap, gap_from = max((later - earlier, earlier) for earlier, later in zip(edges, edges[1:]))
+    max_gap = MAX_GAP_PERIODS / float(hz)
+    if gap > max_gap:
+        return (f"gap of {gap:.2f} s from t={gap_from:.1f}s on {where} > "
+                f"{MAX_GAP_PERIODS:g} periods ({max_gap:.2f} s at nominal {hz} Hz), "
+                f"rate {actual:.2f} Hz in {window}")
     return None
 
 
