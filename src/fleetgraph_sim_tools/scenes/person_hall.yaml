@@ -1,0 +1,16 @@
+name: person_hall
+# One person standing in the hall, 3.3 m straight ahead of the dock, in front
+# of the wall between the doors: >= 0.77 m from the dock -> lab_1 route round
+# either side of the crate, >= 1.2 m from the dock -> lab_2 line.
+entities:
+  - id: person_1
+    category: person
+    label: person
+    shape: {type: cylinder, radius: 0.25, height: 1.7}
+    path: [{t: 0, x: 3.3, y: 0.0}]
+  - id: crate                     # in the world SDF, unknown to the static map
+    category: obstacle
+    label: crate
+    shape: {type: box, size: [0.4, 0.4, 0.5]}
+    preexisting: true
+    path: [{t: 0, x: 2.5, y: 0.8}]

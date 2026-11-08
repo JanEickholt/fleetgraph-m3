@@ -1,0 +1,20 @@
+name: box_front
+# Harness scene (tests/scenarios/weekly_sim_tools.yaml): a 0.4 m box 1.2 m
+# ahead of robot_1 at the dock (robot faces +x), slid 0.8 m to the robot's
+# right from t 20 to 24, removed at t 44.
+entities:
+  - id: box
+    category: obstacle
+    label: box
+    shape: {type: box, size: [0.4, 0.4, 0.5]}
+    spawn: 2
+    remove: 44
+    path:
+      - {t: 20, x: 1.2, y: 0.0}
+      - {t: 24, x: 1.2, y: -0.8}
+  - id: crate                     # in the world SDF, unknown to the static map
+    category: obstacle
+    label: crate
+    shape: {type: box, size: [0.4, 0.4, 0.5]}
+    preexisting: true
+    path: [{t: 0, x: 2.5, y: 0.8}]

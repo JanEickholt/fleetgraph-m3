@@ -1,0 +1,46 @@
+name: weekly_sim_tools
+# Sim tools on one robot at the dock, no Nav2. Scene box_front: a 0.4 m box
+# 1.2 m ahead of robot_1 (scene t 2..20), slid 0.8 m to the robot's right
+# (t 20..24), removed at t 44. The lidar, the simulated detector and the
+# ground truth must each follow it. Scene time starts with the director,
+# a few seconds into the window: each check window holds for any director
+# start between window t 0 and 8. Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py
+  ready_timeout_sec: 240
+topics:
+  /robot_1/scan: sensor_msgs/msg/LaserScan
+  /robot_1/perception/detections: fleetgraph_interfaces/msg/SceneObservation
+  /sim/truth: fleetgraph_interfaces/msg/SceneObservation
+actions:
+  - {t: 0, launch: "fleetgraph_sim_tools sim_tools.launch.py scene:=box_front"}
+window_sec: 60
+assert:
+  # lidar 0.1 m ahead of base_footprint: box face at 1.2 - 0.2 - 0.1 = 0.9 m.
+  # Free ahead = the wall at x 3.95 (3.85 m); past the box's side position
+  # (bearing -36 deg) the walls are >= 4.6 m away.
+  - scan_range: {topic: /robot_1/scan, bearing_deg: 0, min_m: 0.85, max_m: 0.95,
+                 from_sec: 10, to_sec: 20}
+  - scan_range: {topic: /robot_1/scan, bearing_deg: 0, min_m: 3.7, from_sec: 32, to_sec: 60}
+  - scan_range: {topic: /robot_1/scan, bearing_deg: -36, min_m: 1.0, max_m: 1.2,
+                 from_sec: 32, to_sec: 43}
+  - scan_range: {topic: /robot_1/scan, bearing_deg: -36, min_m: 4.0, from_sec: 52, to_sec: 60}
+  # detector, base_footprint = map frame at the dock (yaw 0). Noise 0.05 m per
+  # axis and 5% dropout: a share of frames, not every one.
+  - entity_near: {topic: /robot_1/perception/detections, x: 1.2, y: 0.0, tol: 0.15,
+                  min_fraction: 0.8, from_sec: 10, to_sec: 20}
+  - entity_near: {topic: /robot_1/perception/detections, x: 1.2, y: -0.8, tol: 0.15,
+                  min_fraction: 0.8, from_sec: 32, to_sec: 43}
+  - no_entity_near: {topic: /robot_1/perception/detections, x: 1.2, y: 0.0, tol: 0.5,
+                     from_sec: 32, to_sec: 60}
+  - no_entity_near: {topic: /robot_1/perception/detections, x: 1.2, y: -0.8, tol: 0.5,
+                     from_sec: 52, to_sec: 60}
+  - min_rate: {topic: /robot_1/perception/detections, hz: 5.0}     # also when empty
+  # ground truth: exact map position in every message
+  - entity_near: {topic: /sim/truth, entity_id: box, x: 1.2, y: 0.0, tol: 0.01,
+                  from_sec: 10, to_sec: 20}
+  - entity_near: {topic: /sim/truth, entity_id: box, x: 1.2, y: -0.8, tol: 0.01,
+                  from_sec: 32, to_sec: 43}
+  - no_entity_near: {topic: /sim/truth, entity_id: box, x: 1.2, y: -0.8, tol: 1.0,
+                     from_sec: 52, to_sec: 60}
+  - min_rate: {topic: /sim/truth, hz: 10.0}

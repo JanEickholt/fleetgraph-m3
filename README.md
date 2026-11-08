@@ -159,3 +159,21 @@ text only. `tools/ws_probe.py` is a minimal client (scenarios `weekly_m2_bridge`
   container memory and about 4 cores busy; 1 robot (`weekly_nav_go_to`): 1.0, 736 MiB.
   RTF is the evidence key `real_time_factor` in `tests/artifacts/<name>.json`, memory the
   peak of `docker stats --no-stream fleetgraph-m3` sampled during the run.
+
+### Scripted scenes and simulated detections (sim only)
+
+`fleetgraph_sim_tools` runs next to `sim.launch.py` (same `robots`):
+
+```bash
+$R ros2 launch fleetgraph_sim_tools sim_tools.launch.py robots:=3 scene:=walker_hall seed:=1
+```
+
+- Scenes: `box_front`, `person_hall`, `door_lab1_box_temporary`, `group_door_lab1`,
+  `walker_hall` in `src/fleetgraph_sim_tools/scenes/` (format: `scene_script.py`). `scene:=`
+  takes a name or a `.yaml` path, empty for none; scene time starts with the director.
+- `/sim/truth` (`SceneObservation`, 10 Hz, frame `map`): every active scene entity under its
+  scene id. Tests and sim tools only: robot software never subscribes.
+- `/robot_N/perception/detections` (`SceneObservation`, 5 Hz, also when empty, frame
+  `base_footprint`): scene entities and other robots as a camera detector would report them
+  (field of view, range, line of sight on the static map, noise, dropout), without ids or
+  pose. Seeded per robot from `seed`.

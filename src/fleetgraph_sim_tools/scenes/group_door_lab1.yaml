@@ -1,0 +1,21 @@
+name: group_door_lab1
+# A social group: two persons 0.8 m apart, facing each other across the
+# approach to door_lab1 (0.7 m in front of the door), for the whole scene.
+# Too close together to pass between, 0.4 m from the wall behind them.
+entities:
+  - id: person_1
+    category: person
+    label: person
+    shape: {type: cylinder, radius: 0.25, height: 1.7}
+    path: [{t: 0, x: 3.3, y: 1.1, yaw: 1.5708}]
+  - id: person_2
+    category: person
+    label: person
+    shape: {type: cylinder, radius: 0.25, height: 1.7}
+    path: [{t: 0, x: 3.3, y: 1.9, yaw: -1.5708}]
+  - id: crate                     # in the world SDF, unknown to the static map
+    category: obstacle
+    label: crate
+    shape: {type: box, size: [0.4, 0.4, 0.5]}
+    preexisting: true
+    path: [{t: 0, x: 2.5, y: 0.8}]

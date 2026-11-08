@@ -1,0 +1,18 @@
+name: door_lab1_box_temporary
+# A 0.6 m box in the middle of door_lab1 (x = 4, gap y 1.05..1.95) from t 10
+# to t 50: 0.15 m left on either side, too narrow for a robot (0.3 m wide).
+# A temporary blockage: the door is free again afterwards.
+entities:
+  - id: door_box
+    category: obstacle
+    label: box
+    shape: {type: box, size: [0.6, 0.6, 0.5]}
+    spawn: 10
+    remove: 50
+    path: [{t: 0, x: 4.0, y: 1.5}]
+  - id: crate                     # in the world SDF, unknown to the static map
+    category: obstacle
+    label: crate
+    shape: {type: box, size: [0.4, 0.4, 0.5]}
+    preexisting: true
+    path: [{t: 0, x: 2.5, y: 0.8}]
