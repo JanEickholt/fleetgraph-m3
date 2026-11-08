@@ -1,0 +1,54 @@
+name: demo_midterm
+# Midterm gate (week 8): a plain-text task flows through (mock) Module 1, a
+# Gazebo robot executes it through Module 3, and the Module 2 side (the
+# websocket probe tools/ws_probe.py, echoing to /mock_m2/*) sees the state
+# updates. Three robots registered, robot_3 in maintenance
+# (mock_data/scenarios/midterm_demo.yaml): a scripted patrol keeps robot_1
+# busy, then the operator's delivery arrives as text through the websocket
+# (~t=38). The mock structures it (delivery storage -> lab_2) and allocates
+# it without robot_3: robot_2 (4.02 m to the storage) although robot_3
+# (3.35 m) is nearer. Timebase: sim seconds.
+sim:
+  launch: fleetgraph_sim sim.launch.py robots:=3
+  ready_timeout_sec: 240
+topics:
+  /fleet/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /fleet/robot_state: fleetgraph_interfaces/msg/RobotState
+  /mock_m2/robot_state: fleetgraph_interfaces/msg/RobotState
+  /mock_m2/task_update: fleetgraph_interfaces/msg/TaskUpdate
+  /ground_truth/robot_2/odom: nav_msgs/msg/Odometry
+actions:
+  - {t: 0, launch: "fleetgraph_sim nav.launch.py robots:=3"}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_1,
+                 args: "--ros-args -r __ns:=/robot_1 -p robot_id:=robot_1 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_2,
+                 args: "--ros-args -r __ns:=/robot_2 -p robot_id:=robot_2 -p use_sim_time:=true"}}
+  - {t: 1, run: {pkg: fleetgraph_robot, exec: agent, tag: agent_robot_3,
+                 args: "--ros-args -r __ns:=/robot_3 -p robot_id:=robot_3 -p use_sim_time:=true -p maintenance:=true"}}
+  - {t: 25, run: {pkg: fleetgraph_robot, exec: mock_orchestrator,
+                  args: "--ros-args -p use_sim_time:=true -p scenario_file:={mock_data}/scenarios/midterm_demo.yaml"}}
+  - t: 35
+    launch: >-
+      fleetgraph_robot m2_bridge.launch.py
+      probe:='python3 /home/ubuntu/tools/ws_probe.py
+      --text "Bring the parcel from the storage to laboratory 2"'
+window_sec: 180
+assert:
+  # three robots registered; their telemetry reaches Module 2 at 2 Hz
+  - min_rate: {topic: /mock_m2/robot_state, hz: 2.0, source: robot_1}
+  - min_rate: {topic: /mock_m2/robot_state, hz: 2.0, source: robot_2}
+  - min_rate: {topic: /mock_m2/robot_state, hz: 2.0, source: robot_3}
+  # Module 2 sees robot_3 in maintenance (RobotState.STATUS_MAINTENANCE)
+  - always_value: {topic: /mock_m2/robot_state, field: status, equals: 2, source: robot_3}
+  - task_state: {task_id: txt-patrol, state: EXECUTING, source: robot_1}
+  - task_state: {task_id: txt-patrol, state: COMPLETED, source: robot_1}
+  # the operator's delivery: structured, queued, assigned to robot_2, executed
+  - task_sequence: {task_id: live-0001, states: [RECEIVED, PARSED, QUEUED, ASSIGNED, EXECUTING, COMPLETED]}
+  - task_state: {task_id: live-0001, state: EXECUTING, source: robot_2}
+  - task_state: {task_id: live-0001, state: COMPLETED, source: robot_2}
+  - no_task_update: {robot_id: robot_3}
+  # Module 2 follows the delivery to the end, the robot's position included
+  - task_state: {topic: /mock_m2/task_update, task_id: live-0001, state: COMPLETED, source: robot_2}
+  - arrives_at: {topic: /mock_m2/robot_state, source: robot_2, x: 6.5, y: -1.5, tol: 0.3}
+  # ground truth: lab_2 (6.5, -1.5)
+  - arrives_at: {topic: /ground_truth/robot_2/odom, x: 6.5, y: -1.5, tol: 0.35}

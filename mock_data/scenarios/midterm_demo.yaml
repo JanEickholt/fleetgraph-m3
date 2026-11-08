@@ -1,0 +1,10 @@
+# Midterm demo (week 8) for three robots, robot_3 in maintenance. The
+# scripted patrol starts at the storage, so it goes to robot_1 (nearest,
+# 2.12 m) and keeps it busy. The operator's delivery then arrives as plain
+# text over the websocket (/mock_m1/task_text, ids live-0001, ...). From the
+# storage robot_3 (3.35 m) would be nearer than robot_2 (4.02 m), but robot_3
+# is in maintenance, so context allocation gives the delivery to robot_2
+# (the distance baseline would pick robot_3, which then refuses it).
+allocation: context
+tasks:
+  - {t: 2, task_id: txt-patrol, text: "Patrol the storage and lab 1"}
