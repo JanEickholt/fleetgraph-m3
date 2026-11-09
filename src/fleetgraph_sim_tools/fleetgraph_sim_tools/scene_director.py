@@ -5,7 +5,10 @@ publishes its ground truth.
       -p use_sim_time:=true
 
 scene is a name in share/fleetgraph_sim_tools/scenes or a path to a .yaml
-file (format: scene_script.py). Scene time starts at the first /clock tick.
+file (format: scene_script.py). Scene time 0 lies at the clock time the test
+harness passes in FLEETGRAPH_SCRIPT_ORIGIN_SEC (its window start plus the
+action's t, the origin the mock M1 counts task times from), else at the first
+/clock tick.
 Each tick (rate_hz, sim time) spawns the models that became active, moves
 those whose pose changed and removes expired ones through the world's
 UserCommands services, then publishes /sim/truth: every active entity, also
@@ -28,6 +31,7 @@ from rclpy.node import Node
 
 from fleetgraph_interfaces.msg import SceneEntity, SceneObservation
 from fleetgraph_robot import contract
+from fleetgraph_robot.mock_orchestrator import script_origin
 from fleetgraph_sim_tools import scene_script
 
 GZ_TIMEOUT_MS = 2000
@@ -70,17 +74,21 @@ class SceneDirector(Node):
         self.meta = contract.MetaStamper('scene_director', self.get_clock())
         self.pub_truth = self.create_publisher(SceneObservation, scene_script.TOPIC_TRUTH,
                                                contract.QOS_TELEMETRY)
-        self._start_ns = None
+        self._origin_sec = None             # clock time of scene time 0
         self.create_timer(1.0 / self.params['rate_hz'], self._tick)
         self.get_logger().info(f'scene {self.scene.name}: {len(self.scene.entities)} entities')
 
     def _tick(self):
-        now = self.get_clock().now().nanoseconds
+        now = self.get_clock().now().nanoseconds * 1e-9
         if now == 0:
             return                          # no /clock yet
-        if self._start_ns is None:
-            self._start_ns = now
-        step = self.playback.step((now - self._start_ns) * 1e-9)
+        if self._origin_sec is None:
+            self._origin_sec, problem = script_origin(now)
+            if problem:
+                self.get_logger().warn(f'{problem}; scene time starts now')
+            self.get_logger().info(f'scene time 0 at clock {self._origin_sec:.3f} '
+                                   f'(now {now - self._origin_sec:.3f})')
+        step = self.playback.step(now - self._origin_sec)
         for entity, pose in step.spawn:
             self._spawn(entity, pose)
         if step.move:

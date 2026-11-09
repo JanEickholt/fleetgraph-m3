@@ -31,6 +31,8 @@ CONTAINER_DOMAIN_ID = os.environ.get('ROS_DOMAIN_ID', '0')
 _used_domain_ids = set()
 
 ACTION_KINDS = ('run', 'launch', 'publish')
+# read by fleetgraph_robot.mock_orchestrator.script_origin (scene_director too)
+SCRIPT_ORIGIN_ENV = 'FLEETGRAPH_SCRIPT_ORIGIN_SEC'
 MOCK_DATA = os.environ.get('FLEETGRAPH_MOCK_DATA', '/home/ubuntu/mock_data')
 DEFAULT_SIM_READY_TIMEOUT_SEC = 240
 DEFAULT_CLOCK_STALL_SEC = 30
@@ -220,17 +222,28 @@ def _isolate(name, rng=random):
     return str(domain_id), partition
 
 
-def _start_action(action):
+def _action_env(action, window_start):
+    """Environment of an action's process: the clock time its script time 0
+    lies at, the window start plus the action's t. The scene director and the
+    mock M1 count scene and task times from it, so scene events and tasks
+    keep step with action times and assertion windows whatever the start-up
+    lag of each process (without it each counts from its first /clock)."""
+    return {SCRIPT_ORIGIN_ENV: f"{window_start + float(action['t']):.9f}"}
+
+
+def _start_action(action, window_start):
     """Start the process for a `run` or `launch` action (None for `publish`)."""
+    env = _action_env(action, window_start)
     if 'run' in action:
         run_spec = action['run']
         # {mock_data} in args = mounted mock_data/ directory
         args = str(run_spec.get('args', '')).replace('{mock_data}', MOCK_DATA)
         return ManagedProcess(
             f"ros2 run {run_spec['pkg']} {run_spec['exec']} {args}",
-            tag=_process_tag(action))
+            env=env, tag=_process_tag(action))
     if 'launch' in action:
-        return ManagedProcess(f"ros2 launch {action['launch']}", tag=_process_tag(action))
+        return ManagedProcess(f"ros2 launch {action['launch']}", env=env,
+                              tag=_process_tag(action))
     return None
 
 
@@ -295,7 +308,7 @@ def run(path):
                         f"{clock_stall_sec}s wall time "
                         f"(window was {now:.1f}/{window_sec} sim s)")
             while pending_actions and pending_actions[0]['t'] <= now:
-                process = _start_action(pending_actions.pop(0))
+                process = _start_action(pending_actions.pop(0), recorder.window_start())
                 if process is not None:
                     processes.append(process)
             for publisher in publishers:

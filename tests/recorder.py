@@ -119,6 +119,14 @@ class Recorder(Node):
         self._window_start_wall = time.time()
         self._window_start_clock = self.clock_sec
 
+    def window_start(self):
+        """Clock time the window opened at, in the active timebase: sim
+        seconds, else wall seconds since the epoch (the clock of nodes
+        without use_sim_time)."""
+        if self._window_start_clock is not None:
+            return self._window_start_clock
+        return self._window_start_wall
+
     def wall_elapsed(self):
         """Wall seconds since start_window (elapsed / wall = real-time factor)."""
         return time.time() - self._window_start_wall

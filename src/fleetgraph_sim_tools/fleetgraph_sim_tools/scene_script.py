@@ -22,8 +22,9 @@ Scene file (YAML; shipped ones in share/fleetgraph_sim_tools/scenes/):
       preexisting: true           # optional: already part of the world SDF
       path: [{t: 0, x: 2.5, y: 0.8}]
 
-Times (spawn, remove, t) are sim seconds after the director's first /clock
-tick; an entity exists while spawn <= t < remove. One waypoint is static;
+Times (spawn, remove, t) are sim seconds of scene time (scene_director:
+from the test harness's origin, else its first /clock tick); an entity
+exists while spawn <= t < remove. One waypoint is static;
 more are piecewise-linear motion with strictly increasing t (yaw along the
 shorter arc, default 0), held at the first waypoint before it and at the
 last after it. x, y is the footprint centre and models stand on the floor,

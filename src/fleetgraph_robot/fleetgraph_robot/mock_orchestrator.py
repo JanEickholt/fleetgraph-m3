@@ -15,7 +15,9 @@ cancel at its time sends a TaskCommand for an assigned task; a task still
 waiting or queued leaves its queue and the mock reports it CANCELLED
 (ERROR_CANCELLED_BY_OPERATOR) itself. All TaskUpdates are written
 to an optional JSONL event log; a metrics summary is logged at the end.
-Times in the script are sim seconds after the first /clock tick.
+Times in the script are seconds on the node's clock (sim time with
+use_sim_time) after script_origin: the time the test harness passes in
+FLEETGRAPH_SCRIPT_ORIGIN_SEC, else the first /clock tick.
 
 Plain text: a script entry with `text:` instead of type/locations/priority
 is parsed by task_text.py, and so is every std_msgs/String on
@@ -54,6 +56,31 @@ SOURCE_ID = 'm1_mock'
 TOPIC_TASK_TEXT = '/mock_m1/task_text'
 AUTO = 'auto'                  # robot_id: the allocator chooses
 LIVE_ID_PREFIX = 'live-'
+# Script time 0 on the node's clock, set by the test harness (tests/runner.py:
+# window start + the action's t) so every process of a scenario counts from
+# one origin; scene_director reads it too.
+SCRIPT_ORIGIN_ENV = 'FLEETGRAPH_SCRIPT_ORIGIN_SEC'
+# The origin and the first clock reading differ by the start-up lag; more
+# than this means two timebases (a sim-time origin for a wall-clock node).
+MAX_ORIGIN_LAG_SEC = 3600.0
+
+
+def script_origin(first_clock_sec, environ=os.environ):
+    """(origin, problem): the clock time script time 0 lies at, and why the
+    harness's origin was not used (None when it was, or none was given).
+    Without one (a manual run) script time starts at the first clock tick."""
+    value = environ.get(SCRIPT_ORIGIN_ENV)
+    if value is None:
+        return first_clock_sec, None
+    try:
+        origin = float(value)
+    except ValueError:
+        return first_clock_sec, f'{SCRIPT_ORIGIN_ENV}={value!r} is not a number'
+    if not abs(first_clock_sec - origin) <= MAX_ORIGIN_LAG_SEC:
+        return first_clock_sec, (f'{SCRIPT_ORIGIN_ENV}={origin:.3f} is '
+                                 f'{origin - first_clock_sec:+.0f} s off the clock '
+                                 f'({first_clock_sec:.3f}): another timebase')
+    return origin, None
 
 
 @dataclass
@@ -124,7 +151,7 @@ class MockOrchestrator(Node):
         log_file = self.params['log_file']
         self.event_log = open(log_file, 'a') if log_file else None
 
-        self.start_time = None     # sim seconds of the first /clock tick
+        self.start_time = None     # clock seconds of script time 0 (script_origin)
         self.queues = {}           # robot_id -> TaskRequests waiting for that robot
         self.tasks = {}            # task_id -> {robot_id, received, assigned, state, ...}
         self.in_flight = {}        # robot_id -> InFlightAssignment
@@ -149,7 +176,11 @@ class MockOrchestrator(Node):
         if now <= 0.0:
             return                                   # no /clock yet
         if self.start_time is None:
-            self.start_time = now
+            self.start_time, problem = script_origin(now)
+            if problem:
+                self.get_logger().warn(f'{problem}; script time starts now')
+            self.get_logger().info(f'script time 0 at clock {self.start_time:.3f} '
+                                   f'(now {now - self.start_time:.3f})')
         script_time = now - self.start_time
         while self.script and self.script[0]['t'] <= script_time:
             self._receive(self.script.pop(0))
@@ -296,9 +327,8 @@ class MockOrchestrator(Node):
             return
         robot_id = self.tasks.get(task_id, {}).get('robot_id', '')
         if self._assigned_task(robot_id) != task_id:
-            state = self.tasks.get(task_id, {}).get('state')
-            self.get_logger().warn(f'cancel {task_id}: not assigned '
-                                   f'({STATE_NAMES.get(state, "unknown task")}), nothing to cancel')
+            state = STATE_NAMES.get(self.tasks.get(task_id, {}).get('state'), 'unknown task')
+            self.get_logger().warn(f'cancel {task_id}: not assigned ({state}), nothing to cancel')
             return
         msg = TaskCommand(robot_id=robot_id, task_id=task_id,
                           command=TaskCommand.COMMAND_CANCEL, reason=reason)
